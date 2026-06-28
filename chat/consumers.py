@@ -1,275 +1,273 @@
 import json
 import logging
+import time
+from collections import deque
+
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
-from django.contrib.auth.models import User
+from django.utils import timezone
+
 from .models import ChatRoom, Message
 
 logger = logging.getLogger(__name__)
 
+# --- Limits / anti-abuse -----------------------------------------------------
+MAX_MESSAGE_LENGTH = 2000          # characters; longer messages are rejected
+RATE_LIMIT_COUNT = 10              # max messages...
+RATE_LIMIT_WINDOW = 10.0          # ...per this many seconds, per connection
+# WebRTC signalling payloads can be large (SDP), but cap them to avoid abuse.
+MAX_SIGNAL_BYTES = 100_000
+
 
 class ChatConsumer(AsyncWebsocketConsumer):
+    """Per-room chat + WebRTC signalling.
+
+    Security model:
+      * Only authenticated users may connect at all (anonymous users could
+        previously read every broadcast in a room).
+      * The room must already exist (rooms are created through the HTTP view,
+        not by merely opening a socket).
+      * Outbound chat is rate-limited and length-capped per connection.
+      * Identity (``from_user``) and system notification text are always
+        derived server-side, never trusted from the client payload.
+    """
+
     async def connect(self):
         self.room_name = self.scope['url_route']['kwargs']['room_name']
         self.room_group_name = f'chat_{self.room_name}'
-        
-        logger.info(f"User connecting to room: {self.room_name}")
-        
-        # Adaugă utilizatorul la grupa camerei
-        await self.channel_layer.group_add(
-            self.room_group_name,
-            self.channel_name
-        )
-        
+        self.user = self.scope.get('user')
+        self._message_times = deque()
+
+        # 1) Authentication is mandatory.
+        if not self.user or not self.user.is_authenticated:
+            logger.info('Rejected anonymous WebSocket connection to %s', self.room_name)
+            await self.close(code=4401)  # 4401 = unauthorized (app-defined)
+            return
+
+        # 2) The room must exist; we do not auto-create rooms from a socket.
+        if not await self.room_exists():
+            logger.info('Rejected connection to missing room %s', self.room_name)
+            await self.close(code=4404)  # 4404 = not found (app-defined)
+            return
+
+        await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
-        logger.info(f"WebSocket connection accepted for room: {self.room_name}")
-        
-        # Anunță că un utilizator s-a conectat
-        if self.scope["user"].is_authenticated:
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'user_join',
-                    'username': self.scope["user"].username,
-                }
-            )
+        logger.debug('User %s connected to room %s', self.user.username, self.room_name)
+
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'user_join', 'username': self.user.username},
+        )
 
     async def disconnect(self, close_code):
-        logger.info(f"User disconnecting from room: {self.room_name}")
-        
-        # Anunță că un utilizator s-a deconectat
-        if self.scope["user"].is_authenticated:
+        # group_add only ran for accepted (authenticated) connections.
+        if getattr(self, 'user', None) and self.user.is_authenticated:
             await self.channel_layer.group_send(
                 self.room_group_name,
-                {
-                    'type': 'user_leave',
-                    'username': self.scope["user"].username,
-                }
+                {'type': 'user_leave', 'username': self.user.username},
             )
-        
-        # Elimină utilizatorul din grupa camerei
-        await self.channel_layer.group_discard(
-            self.room_group_name,
-            self.channel_name
-        )
+            await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
-    async def receive(self, text_data):
-        logger.info(f"Received message: {text_data}")
-        
-        if not self.scope["user"].is_authenticated:
-            logger.warning("Unauthenticated user tried to send message")
-            await self.send(text_data=json.dumps({
-                'error': 'Trebuie să fii autentificat pentru a trimite mesaje'
-            }))
+    # -- inbound ------------------------------------------------------------
+    async def receive(self, text_data=None, bytes_data=None):
+        if not self.user or not self.user.is_authenticated:
+            return  # accepted sockets are always authenticated, but be safe
+
+        if text_data is None or len(text_data) > MAX_SIGNAL_BYTES:
             return
-            
-        try:
-            text_data_json = json.loads(text_data)
-            message_type = text_data_json.get('type', 'message')
-            
-            # Handle different message types
-            if message_type == 'video_offer':
-                await self.handle_video_offer(text_data_json)
-            elif message_type == 'video_answer':
-                await self.handle_video_answer(text_data_json)
-            elif message_type == 'ice_candidate':
-                await self.handle_ice_candidate(text_data_json)
-            elif message_type == 'video_call_request':
-                await self.handle_video_call_request(text_data_json)
-            elif message_type == 'video_call_end':
-                await self.handle_video_call_end(text_data_json)
-            else:
-                # Regular chat message
-                message = text_data_json.get('message', '').strip()
-                
-                if not message:
-                    logger.warning("Empty message received")
-                    return
-                
-                logger.info(f"Processing message from {self.scope['user'].username}: {message}")
-                
-                # Salvează mesajul în baza de date
-                await self.save_message(message)
-                
-                # Trimite mesajul la toți membrii grupei
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        'type': 'chat_message',
-                        'message': message,
-                        'username': self.scope["user"].username,
-                        'timestamp': self.get_timestamp()
-                    }
-                )
-                logger.info(f"Message sent to group: {self.room_group_name}")
-            
-        except json.JSONDecodeError:
-            logger.error("Invalid JSON received")
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
 
-    # Video WebRTC handlers
-    async def handle_video_offer(self, data):
-        """Handle WebRTC video offer"""
-        logger.info(f"Handling video offer from {self.scope['user'].username}")
+        try:
+            data = json.loads(text_data)
+        except (json.JSONDecodeError, TypeError):
+            logger.debug('Invalid JSON on socket for room %s', self.room_name)
+            return
+        if not isinstance(data, dict):
+            return
+
+        message_type = data.get('type', 'message')
+
+        handlers = {
+            'video_offer': self.handle_video_offer,
+            'video_answer': self.handle_video_answer,
+            'ice_candidate': self.handle_ice_candidate,
+            'video_call_request': self.handle_video_call_request,
+            'video_call_end': self.handle_video_call_end,
+            'typing': self.handle_typing,
+        }
+        handler = handlers.get(message_type)
+        if handler is not None:
+            await handler(data)
+        else:
+            await self.handle_chat_message(data)
+
+    async def handle_chat_message(self, data):
+        message = (data.get('message') or '').strip()
+        if not message:
+            return
+        if len(message) > MAX_MESSAGE_LENGTH:
+            await self.send_error(f'Mesajul depășește {MAX_MESSAGE_LENGTH} de caractere.')
+            return
+        if self.is_rate_limited():
+            await self.send_error('Trimiți mesaje prea repede. Așteaptă o secundă.')
+            return
+
+        await self.save_message(message)
         await self.channel_layer.group_send(
             self.room_group_name,
             {
-                'type': 'video_offer',
-                'offer': data['offer'],
-                'from_user': self.scope["user"].username,
-            }
+                'type': 'chat_message',
+                'message': message,
+                'username': self.user.username,
+                'timestamp': self.get_timestamp(),
+            },
+        )
+
+    # -- WebRTC signalling (identity stamped server-side) -------------------
+    async def handle_video_offer(self, data):
+        offer = data.get('offer')
+        if offer is None:
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'video_offer', 'offer': offer, 'from_user': self.user.username},
         )
 
     async def handle_video_answer(self, data):
-        """Handle WebRTC video answer"""
-        logger.info(f"Handling video answer from {self.scope['user'].username}")
+        answer = data.get('answer')
+        if answer is None:
+            return
         await self.channel_layer.group_send(
             self.room_group_name,
-            {
-                'type': 'video_answer',
-                'answer': data['answer'],
-                'from_user': self.scope["user"].username,
-            }
+            {'type': 'video_answer', 'answer': answer, 'from_user': self.user.username},
         )
 
     async def handle_ice_candidate(self, data):
-        """Handle WebRTC ICE candidate"""
-        logger.info(f"Handling ICE candidate from {self.scope['user'].username}")
+        candidate = data.get('candidate')
+        if candidate is None:
+            return
         await self.channel_layer.group_send(
             self.room_group_name,
-            {
-                'type': 'ice_candidate',
-                'candidate': data['candidate'],
-                'from_user': self.scope["user"].username,
-            }
+            {'type': 'ice_candidate', 'candidate': candidate, 'from_user': self.user.username},
         )
 
     async def handle_video_call_request(self, data):
-        """Handle video call request notification"""
-        logger.info(f"Handling video call request from {self.scope['user'].username}")
+        # The notification text is generated here so a client cannot inject
+        # arbitrary content that other browsers would render.
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 'type': 'video_call_request',
-                'message': data['message'],
-                'from_user': self.scope["user"].username,
-            }
+                'message': f'{self.user.username} a pornit videochat-ul. Click pentru a te alătura!',
+                'from_user': self.user.username,
+            },
         )
 
     async def handle_video_call_end(self, data):
-        """Handle video call end notification"""
-        logger.info(f"Handling video call end from {self.scope['user'].username}")
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'video_call_end', 'from_user': self.user.username},
+        )
+
+    async def handle_typing(self, data):
         await self.channel_layer.group_send(
             self.room_group_name,
             {
-                'type': 'video_call_end',
-                'from_user': self.scope["user"].username,
-            }
+                'type': 'typing',
+                'username': self.user.username,
+                'is_typing': bool(data.get('is_typing')),
+            },
         )
 
+    # -- outbound (group -> socket) -----------------------------------------
     async def chat_message(self, event):
-        logger.info(f"Sending chat message: {event}")
-        # Trimite mesajul la WebSocket
         await self.send(text_data=json.dumps({
             'type': 'message',
             'message': event['message'],
             'username': event['username'],
-            'timestamp': event['timestamp']
+            'timestamp': event['timestamp'],
         }))
 
     async def user_join(self, event):
-        logger.info(f"User joined: {event['username']}")
-        # Anunță că un utilizator s-a alăturat
         await self.send(text_data=json.dumps({
             'type': 'user_join',
             'username': event['username'],
-            'message': f"{event['username']} s-a alăturat conversației"
+            'message': f"{event['username']} s-a alăturat conversației",
         }))
 
     async def user_leave(self, event):
-        logger.info(f"User left: {event['username']}")
-        # Anunță că un utilizator a plecat
         await self.send(text_data=json.dumps({
             'type': 'user_leave',
             'username': event['username'],
-            'message': f"{event['username']} a părăsit conversația"
+            'message': f"{event['username']} a părăsit conversația",
         }))
 
-    # WebRTC message handlers
+    async def typing(self, event):
+        if event['username'] == self.user.username:
+            return  # don't echo my own typing state back to me
+        await self.send(text_data=json.dumps({
+            'type': 'typing',
+            'username': event['username'],
+            'is_typing': event['is_typing'],
+        }))
+
     async def video_offer(self, event):
-        """Send video offer to WebSocket"""
-        logger.info(f"Sending video offer from {event['from_user']}")
-        # Don't send to the sender
-        if event['from_user'] != self.scope["user"].username:
+        if event['from_user'] != self.user.username:
             await self.send(text_data=json.dumps({
-                'type': 'video_offer',
-                'offer': event['offer'],
-                'from_user': event['from_user']
+                'type': 'video_offer', 'offer': event['offer'], 'from_user': event['from_user'],
             }))
 
     async def video_answer(self, event):
-        """Send video answer to WebSocket"""
-        logger.info(f"Sending video answer from {event['from_user']}")
-        # Don't send to the sender
-        if event['from_user'] != self.scope["user"].username:
+        if event['from_user'] != self.user.username:
             await self.send(text_data=json.dumps({
-                'type': 'video_answer',
-                'answer': event['answer'],
-                'from_user': event['from_user']
+                'type': 'video_answer', 'answer': event['answer'], 'from_user': event['from_user'],
             }))
 
     async def ice_candidate(self, event):
-        """Send ICE candidate to WebSocket"""
-        logger.info(f"Sending ICE candidate from {event['from_user']}")
-        # Don't send to the sender
-        if event['from_user'] != self.scope["user"].username:
+        if event['from_user'] != self.user.username:
             await self.send(text_data=json.dumps({
-                'type': 'ice_candidate',
-                'candidate': event['candidate'],
-                'from_user': event['from_user']
+                'type': 'ice_candidate', 'candidate': event['candidate'], 'from_user': event['from_user'],
             }))
 
     async def video_call_request(self, event):
-        """Send video call request notification"""
-        logger.info(f"Sending video call request from {event['from_user']}")
-        await self.send(text_data=json.dumps({
-            'type': 'video_call_request',
-            'message': event['message'],
-            'from_user': event['from_user']
-        }))
+        if event['from_user'] != self.user.username:
+            await self.send(text_data=json.dumps({
+                'type': 'video_call_request',
+                'message': event['message'],
+                'from_user': event['from_user'],
+            }))
 
     async def video_call_end(self, event):
-        """Send video call end notification"""
-        logger.info(f"Sending video call end from {event['from_user']}")
-        await self.send(text_data=json.dumps({
-            'type': 'video_call_end',
-            'from_user': event['from_user']
-        }))
+        if event['from_user'] != self.user.username:
+            await self.send(text_data=json.dumps({
+                'type': 'video_call_end', 'from_user': event['from_user'],
+            }))
+
+    # -- helpers ------------------------------------------------------------
+    async def send_error(self, message):
+        await self.send(text_data=json.dumps({'type': 'error', 'error': message}))
+
+    def is_rate_limited(self):
+        now = time.monotonic()
+        window_start = now - RATE_LIMIT_WINDOW
+        while self._message_times and self._message_times[0] < window_start:
+            self._message_times.popleft()
+        if len(self._message_times) >= RATE_LIMIT_COUNT:
+            return True
+        self._message_times.append(now)
+        return False
+
+    @database_sync_to_async
+    def room_exists(self):
+        return ChatRoom.objects.filter(name=self.room_name).exists()
 
     @database_sync_to_async
     def save_message(self, message):
-        """Salvează mesajul în baza de date"""
-        try:
-            room = ChatRoom.objects.get(name=self.room_name)
-            Message.objects.create(
-                room=room,
-                user=self.scope["user"],
-                content=message
-            )
-        except ChatRoom.DoesNotExist:
-            # Creează camera dacă nu există
-            room = ChatRoom.objects.create(
-                name=self.room_name,
-                description=f"Camera {self.room_name}"
-            )
-            Message.objects.create(
-                room=room,
-                user=self.scope["user"],
-                content=message
-            )
+        room = ChatRoom.objects.filter(name=self.room_name).first()
+        if room is None:
+            # Room was deleted between connect and now; drop silently.
+            return
+        Message.objects.create(room=room, user=self.user, content=message)
 
-    def get_timestamp(self):
-        """Returnează timestamp-ul curent formatat"""
-        from datetime import datetime
-        return datetime.now().strftime('%H:%M')
+    @staticmethod
+    def get_timestamp():
+        return timezone.localtime().strftime('%H:%M')

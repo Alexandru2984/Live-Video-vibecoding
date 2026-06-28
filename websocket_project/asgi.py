@@ -1,25 +1,28 @@
-"""
-ASGI config for websocket_project project.
-
-It exposes the ASGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/4.2/howto/deployment/asgi/
-"""
-
 import os
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "websocket_project.settings")
+
+import django
 from django.core.asgi import get_asgi_application
 from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.auth import AuthMiddlewareStack
-import chat.routing
+from channels.security.websocket import AllowedHostsOriginValidator
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'websocket_project.settings')
+# Inițializează Django ÎNAINTE de a importa rute/consumers
+django.setup()
+
+django_asgi_app = get_asgi_application()
+
+# Importuri care ating modele/config – abia după inițializare
+import chat.routing  # noqa: E402
 
 application = ProtocolTypeRouter({
-    "http": get_asgi_application(),
-    "websocket": AuthMiddlewareStack(
-        URLRouter(
-            chat.routing.websocket_urlpatterns
+    "http": django_asgi_app,
+    # AllowedHostsOriginValidator rejects WebSocket handshakes whose Origin is
+    # not in ALLOWED_HOSTS, blocking cross-site WebSocket hijacking (cookies are
+    # sent on cross-origin WS connections, so SameSite alone is not enough).
+    "websocket": AllowedHostsOriginValidator(
+        AuthMiddlewareStack(
+            URLRouter(chat.routing.websocket_urlpatterns)
         )
     ),
 })
