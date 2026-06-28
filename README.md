@@ -1,192 +1,88 @@
-# Django WebSocket Chat Application
+# micutu chat — Django + WebSockets
 
-O aplicație modernă de chat în timp real construită cu Django și WebSockets folosind Django Channels.
+Aplicație de chat în timp real (Django Channels) cu prezență live, indicator
+„scrie…", istoric paginat, notificări, temă light/dark responsive și apel video
+1:1 prin WebRTC.
 
-## 🌟 Funcționalități
+## ✨ Funcționalități
 
-- **Chat în timp real** folosind WebSockets
-- **Camere de chat multiple** cu descrieri personalizabile
-- **Autentificare utilizatori** cu sistem de login/logout
-- **Istoric mesaje** salvat în baza de date
-- **Interfață modernă** cu Bootstrap 5
-- **Notificări** pentru intrarea/ieșirea utilizatorilor
-- **Design responsive** pentru desktop și mobile
-- **Panel de administrare** Django integrat
+- Chat în timp real prin WebSockets (Django Channels + Daphne)
+- Camere multiple, cu istoric salvat și încărcare „mesaje mai vechi" la scroll
+- Prezență live (cine e online) și indicator de tastare
+- Înregistrare publică cu validare parolă + rate-limit pe IP
+- Notificări sonore și desktop (opt-in), auto-reconnect WebSocket
+- Temă light/dark, design responsive (mobile-first)
+- Apel video 1:1 (WebRTC, perfect negotiation)
+- Panel de administrare Django
 
-## 🚀 Instalare și Configurare
+## 🔒 Securitate (implementat)
 
-### 1. Clonează sau descarcă proiectul
+- `SECRET_KEY` obligatoriu în producție (fără fallback nesigur); `DEBUG=False` implicit
+- Headere de securitate: CSP cu nonce (per request), HSTS, `X-Frame-Options`,
+  `nosniff`, Referrer-Policy, cookii `HttpOnly`/`SameSite`/`Secure`
+- WebSocket: necesită autentificare la conectare, `AllowedHostsOriginValidator`
+  (anti cross-site WebSocket hijacking), rate-limit + limită lungime mesaj
+- Randare XSS-safe (fără `innerHTML` pe date de la utilizator)
+- Identitatea WebRTC și textul notificărilor sunt generate server-side
+- Comandă de rotire a parolelor: `python manage.py rotate_credentials`
+
+## 🚀 Instalare (dev)
+
 ```bash
-cd django_websocket_app
-```
-
-### 2. Creează un mediu virtual
-```bash
-python3 -m venv venv
-source venv/bin/activate  # Pe Linux/Mac
-# sau
-venv\Scripts\activate     # Pe Windows
-```
-
-### 3. Instalează dependențele
-```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-### 4. Rulează scriptul de inițializare
-```bash
-python setup.py
-```
-
-### 5. Pornește serverul
-```bash
+export DJANGO_DEBUG=True            # cheie ne-necesară în dev
+python manage.py migrate
+./init_app.sh                       # migrate + collectstatic + camere demo
+python manage.py createsuperuser    # creează adminul tău (parola ta)
 python manage.py runserver
 ```
 
-## 🔧 Utilizare
+## ⚙️ Variabile de mediu
 
-### Accesare Aplicație
-- **Chat Principal**: http://localhost:8000/
-- **Panel Admin**: http://localhost:8000/admin/
+Setate în producție prin systemd `EnvironmentFile=/etc/video.env`:
 
-### Conturi Predefinite
-- **Administrator**: 
-  - Username: `admin`
-  - Password: `admin123`
-  
-- **Utilizator Demo**: 
-  - Username: `demo`
-  - Password: `demo123`
+| Variabilă | Necesară | Descriere |
+|-----------|----------|-----------|
+| `DJANGO_SECRET_KEY` | **da** (prod) | Cheie secretă. Generează: `python -c "import secrets; print(secrets.token_urlsafe(64))"` |
+| `DJANGO_DEBUG` | nu (implicit `False`) | `True` doar local |
+| `DJANGO_ALLOWED_HOSTS` | nu | CSV, ex: `video.micutu.com,localhost,127.0.0.1` |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | nu | CSV cu schemă, ex: `https://video.micutu.com` |
+| `REDIS_URL` | recomandat | Activează channel layer + cache pe Redis (ex: `redis://127.0.0.1:6379/0`) |
+| `DJANGO_LOG_LEVEL` | nu | Implicit `INFO` |
+| `ALLOW_REGISTRATION` | nu (implicit `True`) | Dezactivează signup-ul public cu `False` |
+| `REGISTRATION_RATE_LIMIT` | nu (implicit `5`) | Înregistrări reușite / IP / oră |
 
-### Funcționalități Chat
+> ⚠️ În producție, fără `DJANGO_SECRET_KEY` aplicația **refuză să pornească**
+> (intenționat — fail closed). Configurează `/etc/video.env` înainte de restart.
 
-1. **Conectare**: Folosește unul din conturile de mai sus
-2. **Creare cameră**: Click pe "Creează o Cameră Nouă"
-3. **Intrare în cameră**: Click pe "Intră în cameră" pentru orice cameră
-4. **Trimitere mesaje**: Scrie în câmpul de text și apasă Enter sau butonul "Trimite"
-5. **Notificări**: Vezi când utilizatorii intră/ies din cameră
+## 🛡️ Rotirea parolelor
 
-## 🏗️ Structura Proiectului
-
-```
-django_websocket_app/
-├── websocket_project/          # Configurarea Django
-│   ├── settings.py            # Setări aplicație
-│   ├── urls.py               # URL-uri principale
-│   ├── asgi.py               # Configurare ASGI pentru WebSockets
-│   └── wsgi.py               # Configurare WSGI
-├── chat/                      # Aplicația de chat
-│   ├── models.py             # Modele (ChatRoom, Message)
-│   ├── views.py              # View-uri Django
-│   ├── consumers.py          # WebSocket consumers
-│   ├── routing.py            # Rutare WebSocket
-│   ├── urls.py               # URL-uri chat
-│   ├── admin.py              # Configurare admin
-│   └── templates/            # Template-uri HTML
-├── manage.py                 # Script de management Django
-├── setup.py                  # Script de inițializare
-└── requirements.txt          # Dependențe Python
-```
-
-## 💻 Tehnologii Folosite
-
-- **Django 4.2+** - Framework web Python
-- **Django Channels** - Suport WebSocket pentru Django
-- **Daphne** - Server ASGI pentru WebSockets
-- **Bootstrap 5** - Framework CSS pentru interfață
-- **SQLite** - Baza de date (poate fi schimbată)
-- **Redis** (opțional) - Pentru scaling în producție
-
-## 🔧 Configurare Avansată
-
-### Folosirea Redis pentru Channel Layers (Producție)
-
-1. Instalează Redis:
 ```bash
-sudo apt-get install redis-server  # Ubuntu/Debian
-brew install redis                 # macOS
+python manage.py rotate_credentials --staff          # toți admin/staff
+python manage.py rotate_credentials admin ana john   # conturi anume
+python manage.py rotate_credentials --all --length 24
+```
+Parolele generate sunt afișate o singură dată.
+
+## 🏗️ Structură
+
+```
+websocket_project/   # settings, asgi (ASGI + origin validator), urls
+chat/                # models, views, consumers, routing, forms, middleware (CSP)
+chat/management/commands/rotate_credentials.py
+chat/templates/      # base (temă), index, room, register, login
 ```
 
-2. Modifică în `settings.py`:
-```python
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            "hosts": [('127.0.0.1', 6379)],
-        },
-    },
-}
-```
+> Fișierele de deployment (nginx vhost, `video.service`, `/etc/video.env`) sunt
+> ținute **în afara git-ului** (`.gitignore`).
 
-### Configurare pentru Producție
+## 📝 Protocol WebSocket (rezumat)
 
-1. Setează `DEBUG = False` în `settings.py`
-2. Configurează `ALLOWED_HOSTS`
-3. Folosește o bază de date PostgreSQL
-4. Configurează servicii statice cu nginx
-5. Folosește Gunicorn + Daphne pentru serving
+Client → server: `{ "message": "..." }`, `{ "type": "typing", "is_typing": true }`,
+și mesaje WebRTC (`video_offer`/`video_answer`/`ice_candidate`/`video_call_request`/`video_call_end`).
 
-## 🐛 Depanare
-
-### Probleme comune:
-
-1. **WebSocket nu se conectează**:
-   - Verifică că serverul rulează pe portul corect
-   - Verifică firewall-ul pentru porturi
-
-2. **Erori de import channels**:
-   - Asigură-te că ai instalat toate dependențele
-   - Activează mediul virtual
-
-3. **Mesajele nu se salvează**:
-   - Verifică că migrațiile au fost aplicate
-   - Verifică permisiunile bazei de date
-
-## 📝 API WebSocket
-
-### Mesaje trimise către server:
-```json
-{
-    "message": "Conținutul mesajului"
-}
-```
-
-### Mesaje primite de la server:
-```json
-{
-    "type": "message",
-    "message": "Conținutul mesajului",
-    "username": "nume_utilizator",
-    "timestamp": "HH:MM"
-}
-```
-
-```json
-{
-    "type": "user_join",
-    "username": "nume_utilizator",
-    "message": "nume_utilizator s-a alăturat conversației"
-}
-```
-
-## 🤝 Contribuții
-
-Contribuțiile sunt binevenite! Te rugăm să:
-
-1. Faci fork la proiect
-2. Creezi o ramură pentru feature-ul tău
-3. Faci commit cu modificările
-4. Trimiți un pull request
-
-## 📄 Licență
-
-Acest proiect este sub licența MIT. Vezi fișierul LICENSE pentru detalii.
-
-## 📞 Suport
-
-Pentru întrebări sau probleme, te rugăm să deschizi un issue în repository.
-
----
-
-**Dezvoltat cu ❤️ folosind Django și WebSockets**
+Server → client: `message`, `user_join`, `user_leave`, `presence` (listă online),
+`typing`, `error`, plus mesajele WebRTC de mai sus.

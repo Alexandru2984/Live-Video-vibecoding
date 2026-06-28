@@ -174,11 +174,11 @@
     </div>
 </div>
 
-<script id="room-name" type="application/json">"{{ room_name|escapejs }}"</script>
+<script id="room-name" type="application/json" nonce="{{ csp_nonce }}">"{{ room_name|escapejs }}"</script>
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 (function () {
     'use strict';
 

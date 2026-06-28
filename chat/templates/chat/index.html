@@ -101,7 +101,7 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
+<script nonce="{{ csp_nonce }}">
 (function () {
     const form = document.getElementById('createRoomForm');
     if (!form) return;

@@ -17,6 +17,11 @@ secret_key.txt
 env/
 venv/
 
+# Deployment configs (nginx vhosts, systemd unit, env files) — never commit
+deploy/
+*.nginx
+*.service
+
 # IDE
 .vscode/
 .idea/
