@@ -241,17 +241,19 @@ function formatTime(date) {
     return date.toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
 }
 
-// Funcție pentru adăugarea mesajelor în chat
+// Funcție pentru adăugarea mesajelor în chat.
+// IMPORTANT: never use innerHTML with server/user data — build nodes and set
+// text via textContent so a message like `<img onerror=...>` can't execute.
 function addMessage(data) {
     const messageElement = document.createElement('div');
     messageElement.className = 'message mb-2';
-    
+
     const now = new Date();
     const time = data.timestamp || formatTime(now);
-    
+
     let messageClass = '';
     let icon = 'bi-person-circle text-primary';
-    
+
     if (data.type === 'user_join') {
         messageClass = 'text-success';
         icon = 'bi-person-plus text-success';
@@ -263,28 +265,46 @@ function addMessage(data) {
         icon = 'bi-camera-video text-white';
         messageElement.className = 'message mb-2 video-notification';
     }
-    
-    messageElement.innerHTML = `
-        <div class="d-flex align-items-start">
-            <div class="avatar me-2">
-                <i class="${icon}" style="font-size: 1.5rem;"></i>
-            </div>
-            <div class="flex-grow-1">
-                <div class="d-flex align-items-center mb-1">
-                    <strong class="me-2 ${messageClass}">${data.username}</strong>
-                    <small class="text-muted ${data.type === 'video_notification' ? 'text-white-50' : ''}">${time}</small>
-                </div>
-                <div class="message-content ${messageClass}">${data.message}</div>
-            </div>
-        </div>
-    `;
-    
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd-flex align-items-start';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar me-2';
+    const iconEl = document.createElement('i');
+    iconEl.className = icon;
+    iconEl.style.fontSize = '1.5rem';
+    avatar.appendChild(iconEl);
+
+    const body = document.createElement('div');
+    body.className = 'flex-grow-1';
+
+    const header = document.createElement('div');
+    header.className = 'd-flex align-items-center mb-1';
+    const nameEl = document.createElement('strong');
+    nameEl.className = 'me-2 ' + messageClass;
+    nameEl.textContent = data.username || '';
+    const timeEl = document.createElement('small');
+    timeEl.className = 'text-muted' + (data.type === 'video_notification' ? ' text-white-50' : '');
+    timeEl.textContent = time;
+    header.appendChild(nameEl);
+    header.appendChild(timeEl);
+
+    const content = document.createElement('div');
+    content.className = 'message-content ' + messageClass;
+    content.textContent = data.message || '';
+
+    body.appendChild(header);
+    body.appendChild(content);
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(body);
+    messageElement.appendChild(wrapper);
+
     chatLog.appendChild(messageElement);
     scrollToBottom();
-    
+
     // Notificare sonoră
     if (document.querySelector('#soundNotifications').checked && data.username !== userName) {
-        // Poți adăuga un sunet aici
         console.log('🔔 Mesaj nou primit');
     }
 }

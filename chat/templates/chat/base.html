@@ -99,9 +99,12 @@
                     <span class="navbar-text me-3">
                         <i class="bi bi-person-circle"></i> Bună, {{ user.username }}!
                     </span>
-                    <a class="btn btn-outline-light btn-sm" href="{% url 'chat:logout' %}">
-                        <i class="bi bi-box-arrow-right"></i> Deconectare
-                    </a>
+                    <form method="post" action="{% url 'chat:logout' %}" class="d-inline">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-outline-light btn-sm">
+                            <i class="bi bi-box-arrow-right"></i> Deconectare
+                        </button>
+                    </form>
                 {% else %}
                     <a class="btn btn-outline-light btn-sm" href="{% url 'chat:login' %}">
                         <i class="bi bi-box-arrow-in-right"></i> Conectare

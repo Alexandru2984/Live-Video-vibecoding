@@ -1,50 +1,52 @@
 #!/bin/bash
+set -euo pipefail
+
+# Initialise the Django WebSocket chat app.
+# This script does NOT create any account with a hard-coded password.
+# Create your admin interactively and rotate any existing weak passwords.
 
 echo "🚀 Inițializarea aplicației Django WebSocket Chat..."
 echo "=================================================="
 
-# Activează mediul virtual
-source ../.venv/bin/activate
+# Activate the virtualenv if present.
+if [ -f ".venv/bin/activate" ]; then
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
+elif [ -f "../.venv/bin/activate" ]; then
+    # shellcheck disable=SC1091
+    source ../.venv/bin/activate
+fi
 
 echo ""
-echo "📦 Crearea migrațiilor pentru aplicația chat..."
-python manage.py makemigrations chat
-
-echo ""
-echo "📦 Aplicarea tuturor migrațiilor..."
+echo "📦 Aplicarea migrațiilor..."
 python manage.py migrate
 
 echo ""
-echo "👤 Crearea superuser (admin/admin123)..."
-echo "from django.contrib.auth.models import User; User.objects.filter(username='admin').exists() or User.objects.create_superuser('admin', 'admin@example.com', 'admin123')" | python manage.py shell
-
-echo ""
-echo "👤 Crearea utilizator demo (demo/demo123)..."
-echo "from django.contrib.auth.models import User; User.objects.filter(username='demo').exists() or User.objects.create_user('demo', 'demo@example.com', 'demo123')" | python manage.py shell
+echo "🎨 Colectarea fișierelor statice..."
+python manage.py collectstatic --noinput
 
 echo ""
 echo "🏠 Crearea camerelor de chat exemplu..."
-echo "
+python manage.py shell <<'PY'
 from chat.models import ChatRoom
-rooms = [
+for name, desc in [
     ('general', 'Conversație generală pentru toți utilizatorii'),
     ('tech', 'Discuții despre tehnologie și programare'),
     ('random', 'Conversații aleatorii și off-topic'),
-]
-for name, desc in rooms:
-    room, created = ChatRoom.objects.get_or_create(name=name, defaults={'description': desc})
-    print(f'Camera {name} - {\"creată\" if created else \"există deja\"}')
-" | python manage.py shell
+]:
+    _, created = ChatRoom.objects.get_or_create(name=name, defaults={'description': desc})
+    print(f"Camera {name} - {'creată' if created else 'există deja'}")
+PY
 
 echo ""
 echo "=================================================="
 echo "🎉 Inițializarea completă!"
 echo ""
-echo "📋 Informații importante:"
-echo "   • Admin: admin/admin123"
-echo "   • Demo user: demo/demo123"
-echo "   • Admin panel: http://localhost:8000/admin/"
-echo "   • Chat app: http://localhost:8000/"
+echo "👤 Creează un administrator (parolă la alegere, nu hard-codată):"
+echo "   python manage.py createsuperuser"
 echo ""
-echo "🚀 Pentru a porni serverul rulează:"
+echo "🔑 Rotește parolele conturilor existente slabe:"
+echo "   python manage.py rotate_credentials --staff"
+echo ""
+echo "🚀 Pornește serverul (dev):"
 echo "   python manage.py runserver"
