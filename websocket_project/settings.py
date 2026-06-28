@@ -213,3 +213,24 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 LOGIN_URL = '/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/'
+
+# Allow public self-registration. Set ALLOW_REGISTRATION=False to lock it down.
+ALLOW_REGISTRATION = _env_bool('ALLOW_REGISTRATION', True)
+# Max successful registrations allowed per client IP per hour (abuse control).
+REGISTRATION_RATE_LIMIT = int(os.environ.get('REGISTRATION_RATE_LIMIT', '5'))
+
+# Cache: used for registration rate limiting. Shared (Redis) when available so
+# the limit holds across worker processes; per-process LocMem otherwise.
+if REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': REDIS_URL,
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        }
+    }

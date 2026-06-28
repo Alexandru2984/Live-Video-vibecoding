@@ -1,7 +1,8 @@
 import json
 import logging
+import threading
 import time
-from collections import deque
+from collections import Counter, defaultdict, deque
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
@@ -17,6 +18,36 @@ RATE_LIMIT_COUNT = 10              # max messages...
 RATE_LIMIT_WINDOW = 10.0          # ...per this many seconds, per connection
 # WebRTC signalling payloads can be large (SDP), but cap them to avoid abuse.
 MAX_SIGNAL_BYTES = 100_000
+
+# --- Presence ---------------------------------------------------------------
+# Per-process roster: room_group_name -> Counter(username -> open tab count).
+# Accurate for the current single-process Daphne deployment. With a multi-worker
+# Redis setup each process would only see its own connections, so presence would
+# need a shared store (e.g. a Redis set) instead.
+_presence_lock = threading.Lock()
+_room_members = defaultdict(Counter)
+
+
+def _presence_add(room, username):
+    with _presence_lock:
+        _room_members[room][username] += 1
+
+
+def _presence_remove(room, username):
+    with _presence_lock:
+        members = _room_members.get(room)
+        if not members:
+            return
+        members[username] -= 1
+        if members[username] <= 0:
+            del members[username]
+        if not members:
+            _room_members.pop(room, None)
+
+
+def _presence_list(room):
+    with _presence_lock:
+        return sorted(_room_members.get(room, {}))
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
@@ -54,19 +85,36 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.accept()
         logger.debug('User %s connected to room %s', self.user.username, self.room_name)
 
+        _presence_add(self.room_group_name, self.user.username)
         await self.channel_layer.group_send(
             self.room_group_name,
             {'type': 'user_join', 'username': self.user.username},
         )
+        await self.broadcast_presence()
 
     async def disconnect(self, close_code):
         # group_add only ran for accepted (authenticated) connections.
         if getattr(self, 'user', None) and self.user.is_authenticated:
+            _presence_remove(self.room_group_name, self.user.username)
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {'type': 'user_leave', 'username': self.user.username},
             )
+            await self.broadcast_presence()
             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+
+    async def broadcast_presence(self):
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'presence', 'users': _presence_list(self.room_group_name)},
+        )
+
+    async def presence(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'presence',
+            'users': event['users'],
+            'count': len(event['users']),
+        }))
 
     # -- inbound ------------------------------------------------------------
     async def receive(self, text_data=None, bytes_data=None):
