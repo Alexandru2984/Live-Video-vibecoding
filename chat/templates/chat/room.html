@@ -1,45 +1,74 @@
 {% extends 'chat/base.html' %}
 
-{% block title %}Camera {{ room_name }}{% endblock %}
+{% block title %}{{ room_name }}{% endblock %}
+
+{% block extra_head %}
+<style>
+    .chat-log { height: 52vh; min-height: 280px; overflow-y: auto; padding: 16px; }
+    @media (max-width: 991.98px) { .chat-log { height: 48dvh; } }
+
+    .message { margin-bottom: .75rem; }
+    .message-content {
+        background: var(--bs-tertiary-bg);
+        padding: .4rem .7rem;
+        border-radius: .65rem;
+        display: inline-block;
+        max-width: 100%;
+    }
+    .message.video-notification .message-content { background: var(--brand-grad); color: #fff; }
+
+    .online-dot { width: 9px; height: 9px; border-radius: 50%; background: #22c55e; display: inline-block; }
+
+    .typing-indicator { min-height: 1.4rem; font-style: italic; }
+
+    .emoji-panel {
+        display: flex; flex-wrap: wrap; gap: .15rem;
+        margin-top: .5rem; max-height: 150px; overflow: auto;
+    }
+    .emoji-panel button {
+        font-size: 1.25rem; line-height: 1; padding: .25rem .4rem;
+        background: transparent; border: none; border-radius: .4rem;
+    }
+    .emoji-panel button:hover { background: var(--bs-secondary-bg); }
+
+    .video-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 767.98px) { .video-grid { grid-template-columns: 1fr; } }
+    .video-grid video { width: 100%; aspect-ratio: 4 / 3; background: #000; border-radius: 12px; object-fit: cover; }
+    #localVideo { transform: scaleX(-1); }
+</style>
+{% endblock %}
 
 {% block content %}
-<div class="row">
-    <div class="col-12">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h1>
-                <i class="bi bi-chat-square-text"></i> Camera: {{ room_name }}
-            </h1>
-            <div>
-                <span class="badge bg-success" id="connectionStatus">
-                    <i class="bi bi-wifi"></i> Conectat
-                </span>
-                <a href="{% url 'chat:index' %}" class="btn btn-outline-secondary btn-sm ms-2">
-                    <i class="bi bi-arrow-left"></i> Înapoi la listă
-                </a>
-            </div>
-        </div>
-        
-        {% if chat_room.description %}
-            <div class="alert alert-info">
-                <i class="bi bi-info-circle"></i> {{ chat_room.description }}
-            </div>
-        {% endif %}
+<div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+    <div class="d-flex align-items-center gap-2">
+        <a href="{% url 'chat:index' %}" class="btn btn-sm btn-outline-secondary" title="Înapoi">
+            <i class="bi bi-arrow-left"></i>
+        </a>
+        <h1 class="h4 mb-0"><i class="bi bi-hash"></i>{{ room_name }}</h1>
     </div>
+    <span class="badge text-bg-success" id="connectionStatus"><i class="bi bi-wifi"></i> Conectat</span>
 </div>
 
-<div class="row">
-    <div class="col-md-9">
-        <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h6 class="mb-0">
-                    <i class="bi bi-chat-dots"></i> Conversație
-                </h6>
-                <span class="badge bg-primary" id="userCount">1 utilizator conectat</span>
+{% if chat_room.description %}
+    <div class="alert alert-info py-2"><i class="bi bi-info-circle"></i> {{ chat_room.description }}</div>
+{% endif %}
+
+<div class="row g-3">
+    <div class="col-lg-8">
+        <div class="card shadow-sm">
+            <div class="card-header bg-transparent d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-chat-dots"></i> Conversație</span>
+                <span class="badge text-bg-primary" id="userCount">1 online</span>
             </div>
             <div class="card-body p-0">
-                <div id="chat-log" style="height: 400px; overflow-y: auto; padding: 15px; background-color: #f8f9fa;">
+                <div id="loadMoreWrap" class="text-center py-2 d-none">
+                    <button id="loadMore" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-arrow-up"></i> Mesaje mai vechi
+                    </button>
+                </div>
+                <div id="chat-log" class="chat-log">
                     {% for message in messages %}
-                        <div class="message mb-2">
+                        <div class="message" data-mid="{{ message.id }}">
                             <div class="d-flex align-items-start">
                                 <div class="avatar me-2">
                                     <i class="bi bi-person-circle text-primary" style="font-size: 1.5rem;"></i>
@@ -47,7 +76,7 @@
                                 <div class="flex-grow-1">
                                     <div class="d-flex align-items-center mb-1">
                                         <strong class="me-2">{{ message.user.username }}</strong>
-                                        <small class="text-muted">{{ message.timestamp|date:"H:i" }}</small>
+                                        <small class="text-body-secondary">{{ message.timestamp|date:"H:i" }}</small>
                                     </div>
                                     <div class="message-content">{{ message.content }}</div>
                                 </div>
@@ -55,621 +84,574 @@
                         </div>
                     {% endfor %}
                 </div>
+                <div id="typingIndicator" class="typing-indicator px-3 small text-body-secondary"></div>
             </div>
-            <div class="card-footer">
+            <div class="card-footer bg-transparent">
                 {% if user.is_authenticated %}
                     <div class="input-group">
-                        <input type="text" id="chat-message-input" class="form-control" 
-                               placeholder="Scrie un mesaj..." autocomplete="off">
-                        <button class="btn btn-primary" type="button" id="chat-message-submit">
-                            <i class="bi bi-send"></i> Trimite
+                        <button class="btn btn-outline-secondary" type="button" id="emojiBtn" title="Emoji">
+                            <i class="bi bi-emoji-smile"></i>
+                        </button>
+                        <input type="text" id="chat-message-input" class="form-control"
+                               placeholder="Scrie un mesaj…" autocomplete="off" maxlength="2000">
+                        <button class="btn btn-brand" type="button" id="chat-message-submit">
+                            <i class="bi bi-send"></i><span class="d-none d-sm-inline"> Trimite</span>
                         </button>
                     </div>
+                    <div id="emojiPanel" class="emoji-panel d-none"></div>
                 {% else %}
-                    <div class="alert alert-warning mb-0">
-                        <i class="bi bi-exclamation-triangle"></i> 
-                        Trebuie să te <a href="{% url 'chat:login' %}">conectezi</a> pentru a putea trimite mesaje.
+                    <div class="alert alert-warning mb-0 py-2">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        Trebuie să te <a href="{% url 'chat:login' %}">conectezi</a> pentru a trimite mesaje.
                     </div>
                 {% endif %}
             </div>
         </div>
     </div>
-    
-    <div class="col-md-3">
-        <div class="card">
-            <div class="card-header">
-                <h6 class="mb-0">
-                    <i class="bi bi-people"></i> Utilizatori Online
-                </h6>
+
+    <div class="col-lg-4">
+        <div class="card shadow-sm">
+            <div class="card-header bg-transparent">
+                <i class="bi bi-people"></i> Online (<span id="onlineCount">1</span>)
             </div>
-            <div class="card-body">
-                <ul id="userList" class="list-unstyled">
-                    {% if user.is_authenticated %}
-                        <li class="mb-2">
-                            <i class="bi bi-person-circle text-success"></i> 
-                            <span class="ms-1">{{ user.username }} (tu)</span>
-                        </li>
-                    {% endif %}
-                </ul>
-            </div>
+            <ul id="userList" class="list-group list-group-flush"></ul>
         </div>
-        
-        <div class="card mt-3">
-            <div class="card-header">
-                <h6 class="mb-0">
-                    <i class="bi bi-gear"></i> Setări Chat
-                </h6>
-            </div>
+
+        <div class="card shadow-sm mt-3">
+            <div class="card-header bg-transparent"><i class="bi bi-sliders"></i> Setări</div>
             <div class="card-body">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="soundNotifications" checked>
-                    <label class="form-check-label" for="soundNotifications">
-                        Notificări sonore
-                    </label>
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" id="soundNotifications">
+                    <label class="form-check-label" for="soundNotifications">Sunet la mesaje</label>
                 </div>
-                <div class="form-check">
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" id="desktopNotifications">
+                    <label class="form-check-label" for="desktopNotifications">Notificări desktop</label>
+                </div>
+                <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" id="autoScroll" checked>
-                    <label class="form-check-label" for="autoScroll">
-                        Derulare automată
-                    </label>
+                    <label class="form-check-label" for="autoScroll">Derulare automată</label>
                 </div>
             </div>
         </div>
     </div>
 </div>
 
-<!-- Secțiunea Video Chat -->
-<div class="row mt-4">
-    <div class="col-12">
-        <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h6 class="mb-0">
-                    <i class="bi bi-camera-video"></i> Video Chat
-                </h6>
-                <div>
-                    <span class="badge bg-secondary" id="videoStatus">Video dezactivat</span>
-                    <button id="toggleVideo" class="btn btn-sm btn-success ms-2">
-                        <i class="bi bi-camera-video"></i> Pornește Video
+<div class="card shadow-sm mt-3">
+    <div class="card-header bg-transparent d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <span><i class="bi bi-camera-video"></i> Video chat</span>
+        <div class="d-flex align-items-center gap-2">
+            <span class="badge text-bg-secondary" id="videoStatus">Video dezactivat</span>
+            {% if user.is_authenticated %}
+            <button id="toggleVideo" class="btn btn-sm btn-success">
+                <i class="bi bi-camera-video"></i> Pornește
+            </button>
+            {% endif %}
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="video-grid">
+            <div>
+                <h6 class="text-center mb-2"><i class="bi bi-person-circle"></i> Tu</h6>
+                <video id="localVideo" autoplay muted playsinline></video>
+                <div class="mt-2 text-center">
+                    <button id="toggleAudio" class="btn btn-sm btn-outline-primary" disabled>
+                        <i class="bi bi-mic"></i> Microfon
+                    </button>
+                    <button id="toggleVideoCamera" class="btn btn-sm btn-outline-primary" disabled>
+                        <i class="bi bi-camera-video"></i> Cameră
                     </button>
                 </div>
             </div>
-            <div class="card-body">
-                <div class="row">
-                    <div class="col-md-6">
-                        <div class="video-container">
-                            <h6 class="text-center mb-2">
-                                <i class="bi bi-person-circle"></i> Videoul tău
-                            </h6>
-                            <video id="localVideo" autoplay muted playsinline 
-                                   style="width: 100%; height: 250px; background: #000; border-radius: 8px;">
-                            </video>
-                            <div class="mt-2 text-center">
-                                <button id="toggleAudio" class="btn btn-sm btn-outline-primary" disabled>
-                                    <i class="bi bi-mic"></i> Microfon
-                                </button>
-                                <button id="toggleVideoCamera" class="btn btn-sm btn-outline-primary ms-2" disabled>
-                                    <i class="bi bi-camera"></i> Cameră
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="video-container">
-                            <h6 class="text-center mb-2">
-                                <i class="bi bi-people"></i> Video partener
-                            </h6>
-                            <video id="remoteVideo" autoplay playsinline 
-                                   style="width: 100%; height: 250px; background: #000; border-radius: 8px;">
-                            </video>
-                            <div class="mt-2 text-center">
-                                <small class="text-muted" id="remoteVideoStatus">Așteptând conexiune video...</small>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="mt-3">
-                    <div class="alert alert-info">
-                        <i class="bi bi-info-circle"></i> 
-                        <strong>Cum funcționează:</strong> Click pe "Pornește Video" pentru a începe transmisiunea. 
-                        Ceilalți utilizatori din cameră vor vedea o notificare și se pot conecta la videocall.
-                    </div>
+            <div>
+                <h6 class="text-center mb-2"><i class="bi bi-people"></i> Partener</h6>
+                <video id="remoteVideo" autoplay playsinline></video>
+                <div class="mt-2 text-center">
+                    <small class="text-body-secondary" id="remoteVideoStatus">Așteptând conexiune…</small>
                 </div>
             </div>
         </div>
     </div>
 </div>
+
+<script id="room-name" type="application/json">"{{ room_name|escapejs }}"</script>
 {% endblock %}
 
 {% block scripts %}
-<!-- Element hidden pentru room name -->
-<script id="room-name" type="application/json">"{{ room_name|escapejs }}"</script>
-
 <script>
-const roomName = JSON.parse(document.getElementById('room-name').textContent);
-const userName = '{{ user.username }}';
-const isAuthenticated = {{ user.is_authenticated|yesno:"true,false" }};
+(function () {
+    'use strict';
 
-console.log('Room name:', roomName);
-console.log('User:', userName);
-console.log('Authenticated:', isAuthenticated);
+    const roomName = JSON.parse(document.getElementById('room-name').textContent);
+    const userName = "{{ user.username|escapejs }}";
+    const isAuthenticated = {{ user.is_authenticated|yesno:"true,false" }};
+    const messagesUrl = "{% url 'chat:room_messages' room_name %}";
 
-// Creează conexiunea WebSocket
-const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const wsUrl = protocol + '//' + window.location.host + '/ws/chat/' + roomName + '/';
-console.log('WebSocket URL:', wsUrl);
+    const chatLog = document.getElementById('chat-log');
+    const messageInput = document.getElementById('chat-message-input');
+    const messageSubmit = document.getElementById('chat-message-submit');
+    const connectionStatus = document.getElementById('connectionStatus');
+    const userCountBadge = document.getElementById('userCount');
+    const onlineCount = document.getElementById('onlineCount');
+    const userList = document.getElementById('userList');
+    const typingIndicator = document.getElementById('typingIndicator');
+    const loadMoreWrap = document.getElementById('loadMoreWrap');
+    const loadMoreBtn = document.getElementById('loadMore');
 
-const chatSocket = new WebSocket(wsUrl);
-
-const chatLog = document.querySelector('#chat-log');
-const messageInput = document.querySelector('#chat-message-input');
-const messageSubmit = document.querySelector('#chat-message-submit');
-const connectionStatus = document.querySelector('#connectionStatus');
-
-// WebRTC Variables
-let localStream = null;
-let remoteStream = null;
-let peerConnection = null;
-let isVideoEnabled = false;
-let isAudioEnabled = true;
-let isVideoMuted = true;
-
-const configuration = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-    ]
-};
-
-// Video Elements
-const localVideo = document.querySelector('#localVideo');
-const remoteVideo = document.querySelector('#remoteVideo');
-const toggleVideoBtn = document.querySelector('#toggleVideo');
-const toggleAudioBtn = document.querySelector('#toggleAudio');
-const toggleVideoCameraBtn = document.querySelector('#toggleVideoCamera');
-const videoStatus = document.querySelector('#videoStatus');
-const remoteVideoStatus = document.querySelector('#remoteVideoStatus');
-
-// Funcție pentru derularea automată
-function scrollToBottom() {
-    if (document.querySelector('#autoScroll').checked) {
-        chatLog.scrollTop = chatLog.scrollHeight;
+    // ---- settings (persisted) --------------------------------------------
+    function getSetting(key, def) {
+        const v = localStorage.getItem('chat:' + key);
+        return v === null ? def : v === '1';
     }
-}
+    function setSetting(key, val) { localStorage.setItem('chat:' + key, val ? '1' : '0'); }
 
-// Funcție pentru formatarea timpului
-function formatTime(date) {
-    return date.toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
-}
+    const soundCb = document.getElementById('soundNotifications');
+    const desktopCb = document.getElementById('desktopNotifications');
+    const autoScrollCb = document.getElementById('autoScroll');
+    if (soundCb) soundCb.checked = getSetting('sound', false);
+    if (desktopCb) desktopCb.checked = getSetting('desktop', false);
+    if (autoScrollCb) autoScrollCb.checked = getSetting('autoscroll', true);
 
-// Funcție pentru adăugarea mesajelor în chat.
-// IMPORTANT: never use innerHTML with server/user data — build nodes and set
-// text via textContent so a message like `<img onerror=...>` can't execute.
-function addMessage(data) {
-    const messageElement = document.createElement('div');
-    messageElement.className = 'message mb-2';
+    if (soundCb) soundCb.addEventListener('change', () => setSetting('sound', soundCb.checked));
+    if (autoScrollCb) autoScrollCb.addEventListener('change', () => setSetting('autoscroll', autoScrollCb.checked));
+    if (desktopCb) desktopCb.addEventListener('change', () => {
+        setSetting('desktop', desktopCb.checked);
+        if (desktopCb.checked && 'Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+    });
 
-    const now = new Date();
-    const time = data.timestamp || formatTime(now);
-
-    let messageClass = '';
-    let icon = 'bi-person-circle text-primary';
-
-    if (data.type === 'user_join') {
-        messageClass = 'text-success';
-        icon = 'bi-person-plus text-success';
-    } else if (data.type === 'user_leave') {
-        messageClass = 'text-warning';
-        icon = 'bi-person-dash text-warning';
-    } else if (data.type === 'video_notification' || data.type === 'video_call_request') {
-        messageClass = 'video-notification';
-        icon = 'bi-camera-video text-white';
-        messageElement.className = 'message mb-2 video-notification';
+    // ---- helpers ----------------------------------------------------------
+    function autoScroll() {
+        if (!autoScrollCb || autoScrollCb.checked) chatLog.scrollTop = chatLog.scrollHeight;
+    }
+    function formatTime(d) {
+        return d.toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
+    }
+    function setStatus(text, cls, icon) {
+        connectionStatus.className = 'badge ' + cls;
+        connectionStatus.innerHTML = '';
+        const i = document.createElement('i'); i.className = 'bi ' + icon;
+        connectionStatus.appendChild(i);
+        connectionStatus.appendChild(document.createTextNode(' ' + text));
     }
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'd-flex align-items-start';
+    // Build a message node WITHOUT innerHTML on user data (XSS-safe).
+    function buildMessageNode(data) {
+        const el = document.createElement('div');
+        el.className = 'message';
+        if (data.id != null) el.dataset.mid = data.id;
 
-    const avatar = document.createElement('div');
-    avatar.className = 'avatar me-2';
-    const iconEl = document.createElement('i');
-    iconEl.className = icon;
-    iconEl.style.fontSize = '1.5rem';
-    avatar.appendChild(iconEl);
+        let messageClass = '';
+        let icon = 'bi-person-circle text-primary';
+        if (data.type === 'user_join') { messageClass = 'text-success'; icon = 'bi-person-plus text-success'; }
+        else if (data.type === 'user_leave') { messageClass = 'text-warning'; icon = 'bi-person-dash text-warning'; }
+        else if (data.type === 'video_notification' || data.type === 'video_call_request') {
+            messageClass = ''; icon = 'bi-camera-video'; el.classList.add('video-notification');
+        }
 
-    const body = document.createElement('div');
-    body.className = 'flex-grow-1';
+        const wrapper = document.createElement('div');
+        wrapper.className = 'd-flex align-items-start';
 
-    const header = document.createElement('div');
-    header.className = 'd-flex align-items-center mb-1';
-    const nameEl = document.createElement('strong');
-    nameEl.className = 'me-2 ' + messageClass;
-    nameEl.textContent = data.username || '';
-    const timeEl = document.createElement('small');
-    timeEl.className = 'text-muted' + (data.type === 'video_notification' ? ' text-white-50' : '');
-    timeEl.textContent = time;
-    header.appendChild(nameEl);
-    header.appendChild(timeEl);
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar me-2';
+        const iconEl = document.createElement('i');
+        iconEl.className = 'bi ' + icon; iconEl.style.fontSize = '1.5rem';
+        avatar.appendChild(iconEl);
 
-    const content = document.createElement('div');
-    content.className = 'message-content ' + messageClass;
-    content.textContent = data.message || '';
+        const body = document.createElement('div');
+        body.className = 'flex-grow-1';
 
-    body.appendChild(header);
-    body.appendChild(content);
-    wrapper.appendChild(avatar);
-    wrapper.appendChild(body);
-    messageElement.appendChild(wrapper);
+        const header = document.createElement('div');
+        header.className = 'd-flex align-items-center mb-1';
+        const nameEl = document.createElement('strong');
+        nameEl.className = 'me-2 ' + messageClass;
+        nameEl.textContent = data.username || '';
+        const timeEl = document.createElement('small');
+        timeEl.className = 'text-body-secondary';
+        timeEl.textContent = data.timestamp || formatTime(new Date());
+        header.append(nameEl, timeEl);
 
-    chatLog.appendChild(messageElement);
-    scrollToBottom();
+        const content = document.createElement('div');
+        content.className = 'message-content';
+        content.textContent = data.message || '';
 
-    // Notificare sonoră
-    if (document.querySelector('#soundNotifications').checked && data.username !== userName) {
-        console.log('🔔 Mesaj nou primit');
+        body.append(header, content);
+        wrapper.append(avatar, body);
+        el.appendChild(wrapper);
+        return el;
     }
-}
 
-// Event listeners pentru WebSocket
-chatSocket.onopen = function(e) {
-    console.log('✅ WebSocket connected successfully');
-    connectionStatus.innerHTML = '<i class="bi bi-wifi"></i> Conectat';
-    connectionStatus.className = 'badge bg-success';
-};
-
-chatSocket.onmessage = function(e) {
-    console.log('📨 Message received:', e.data);
-    const data = JSON.parse(e.data);
-    
-    // Handle different message types
-    if (data.type === 'video_offer') {
-        handleVideoOffer(data);
-    } else if (data.type === 'video_answer') {
-        handleVideoAnswer(data);
-    } else if (data.type === 'ice_candidate') {
-        handleIceCandidate(data);
-    } else if (data.type === 'video_call_request') {
-        handleVideoCallRequest(data);
-    } else if (data.type === 'video_call_end') {
-        handleVideoCallEnd(data);
-    } else {
-        addMessage(data);
+    function addMessage(data, opts) {
+        opts = opts || {};
+        const node = buildMessageNode(data);
+        chatLog.appendChild(node);
+        if (!opts.silent) autoScroll();
+        if (!opts.silent && data.username !== userName && data.type !== 'user_join' && data.type !== 'user_leave') {
+            playBeep();
+            maybeNotify(data);
+        }
     }
-};
 
-chatSocket.onclose = function(e) {
-    console.log('❌ WebSocket closed:', e.code, e.reason);
-    connectionStatus.innerHTML = '<i class="bi bi-wifi-off"></i> Deconectat';
-    connectionStatus.className = 'badge bg-danger';
-};
-
-chatSocket.onerror = function(e) {
-    console.error('🚨 WebSocket error:', e);
-    connectionStatus.innerHTML = '<i class="bi bi-exclamation-triangle"></i> Eroare';
-    connectionStatus.className = 'badge bg-warning';
-};
-
-// Trimiterea mesajelor
-function sendMessage() {
-    if (!isAuthenticated) {
-        alert('Trebuie să te conectezi pentru a trimite mesaje!');
-        return;
+    // ---- sound + desktop notifications -----------------------------------
+    let audioCtx = null;
+    function playBeep() {
+        if (!soundCb || !soundCb.checked) return;
+        try {
+            audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.frequency.value = 660; osc.type = 'sine';
+            gain.gain.setValueAtTime(0.001, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.15, audioCtx.currentTime + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.2);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+        } catch (e) {}
     }
-    
-    const message = messageInput.value.trim();
-    if (message) {
-        console.log('📤 Sending message:', message);
-        chatSocket.send(JSON.stringify({
-            'message': message
-        }));
+    function maybeNotify(data) {
+        if (!desktopCb || !desktopCb.checked) return;
+        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        if (!document.hidden) return;
+        try { new Notification('#' + roomName + ' · ' + data.username, { body: data.message || '' }); } catch (e) {}
+    }
+
+    // ---- presence + typing ------------------------------------------------
+    function updatePresence(data) {
+        const users = data.users || [];
+        userCountBadge.textContent = users.length + ' online';
+        onlineCount.textContent = users.length;
+        userList.replaceChildren();
+        users.forEach(function (u) {
+            const li = document.createElement('li');
+            li.className = 'list-group-item bg-transparent d-flex align-items-center gap-2';
+            const dot = document.createElement('span'); dot.className = 'online-dot';
+            const name = document.createElement('span');
+            name.textContent = u + (u === userName ? ' (tu)' : '');
+            li.append(dot, name);
+            userList.appendChild(li);
+        });
+    }
+
+    const typingUsers = new Map();
+    function renderTyping() {
+        const names = Array.from(typingUsers.keys());
+        if (!names.length) { typingIndicator.textContent = ''; return; }
+        typingIndicator.textContent = names.length === 1
+            ? names[0] + ' scrie…'
+            : names.slice(0, 3).join(', ') + ' scriu…';
+    }
+    function updateTyping(data) {
+        if (data.username === userName) return;
+        clearTimeout(typingUsers.get(data.username));
+        if (data.is_typing) {
+            typingUsers.set(data.username, setTimeout(function () {
+                typingUsers.delete(data.username); renderTyping();
+            }, 4000));
+        } else {
+            typingUsers.delete(data.username);
+        }
+        renderTyping();
+    }
+
+    // ---- WebSocket with auto-reconnect -----------------------------------
+    let socket = null;
+    let reconnectDelay = 1000;
+    let stopped = false;
+
+    function send(obj) {
+        if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(obj));
+    }
+
+    function connect() {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        socket = new WebSocket(proto + '//' + location.host + '/ws/chat/' + encodeURIComponent(roomName) + '/');
+
+        socket.onopen = function () {
+            reconnectDelay = 1000;
+            setStatus('Conectat', 'text-bg-success', 'bi-wifi');
+        };
+        socket.onmessage = function (e) {
+            let data; try { data = JSON.parse(e.data); } catch (err) { return; }
+            switch (data.type) {
+                case 'message': addMessage(data); break;
+                case 'user_join':
+                case 'user_leave': addMessage(data); break;
+                case 'presence': updatePresence(data); break;
+                case 'typing': updateTyping(data); break;
+                case 'error': showError(data.error); break;
+                case 'video_offer': handleVideoOffer(data); break;
+                case 'video_answer': handleVideoAnswer(data); break;
+                case 'ice_candidate': handleIceCandidate(data); break;
+                case 'video_call_request':
+                    addMessage({ type: 'video_call_request', username: 'Video', message: data.message });
+                    break;
+                case 'video_call_end': handleVideoCallEnd(data); break;
+                default: break;
+            }
+        };
+        socket.onclose = function (e) {
+            if (e.code === 4401) { setStatus('Neautentificat', 'text-bg-danger', 'bi-shield-lock'); return; }
+            if (e.code === 4404) { setStatus('Camera nu există', 'text-bg-danger', 'bi-x-octagon'); return; }
+            if (stopped) return;
+            setStatus('Reconectare…', 'text-bg-warning', 'bi-arrow-repeat');
+            setTimeout(connect, reconnectDelay);
+            reconnectDelay = Math.min(reconnectDelay * 2, 15000);
+        };
+        socket.onerror = function () { try { socket.close(); } catch (e) {} };
+    }
+
+    window.addEventListener('beforeunload', function () { stopped = true; if (socket) try { socket.close(); } catch (e) {} });
+
+    function showError(msg) {
+        const alert = document.createElement('div');
+        alert.className = 'alert alert-danger py-1 px-2 small mb-2';
+        alert.textContent = msg || 'Eroare';
+        chatLog.appendChild(alert);
+        autoScroll();
+        setTimeout(function () { alert.remove(); }, 4000);
+    }
+
+    // ---- sending ----------------------------------------------------------
+    function sendMessage() {
+        if (!isAuthenticated) return;
+        const message = messageInput.value.trim();
+        if (!message) return;
+        send({ message: message });
         messageInput.value = '';
-    } else {
-        console.log('⚠️ Empty message, not sending');
+        sendTyping(false);
     }
-}
 
-if (messageSubmit) {
-    messageSubmit.addEventListener('click', sendMessage);
-}
-
-if (messageInput) {
-    messageInput.addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
-            sendMessage();
+    let typingSentAt = 0;
+    let typingStopTimer = null;
+    function sendTyping(isTyping) {
+        if (!isAuthenticated) return;
+        if (isTyping) {
+            const now = Date.now();
+            if (now - typingSentAt > 1500) { send({ type: 'typing', is_typing: true }); typingSentAt = now; }
+            clearTimeout(typingStopTimer);
+            typingStopTimer = setTimeout(function () { send({ type: 'typing', is_typing: false }); }, 2000);
+        } else {
+            clearTimeout(typingStopTimer);
+            send({ type: 'typing', is_typing: false });
         }
-    });
-    
-    // Focus pe input la încărcare
-    messageInput.focus();
-}
-
-// Scroll inițial la partea de jos
-scrollToBottom();
-
-// WebRTC Functions
-async function initializeWebRTC() {
-    try {
-        peerConnection = new RTCPeerConnection(configuration);
-        
-        // Handle ICE candidates
-        peerConnection.onicecandidate = function(event) {
-            if (event.candidate) {
-                console.log('🧊 Sending ICE candidate');
-                chatSocket.send(JSON.stringify({
-                    type: 'ice_candidate',
-                    candidate: event.candidate,
-                    target_user: 'all' // Broadcast to all users in room
-                }));
-            }
-        };
-        
-        // Handle remote stream
-        peerConnection.ontrack = function(event) {
-            console.log('📺 Remote stream received');
-            remoteStream = event.streams[0];
-            remoteVideo.srcObject = remoteStream;
-            remoteVideoStatus.textContent = 'Video conectat!';
-            remoteVideoStatus.className = 'text-success';
-        };
-        
-        // Handle connection state changes
-        peerConnection.onconnectionstatechange = function() {
-            console.log('🔗 Connection state:', peerConnection.connectionState);
-            if (peerConnection.connectionState === 'disconnected') {
-                stopVideoCall();
-            }
-        };
-        
-    } catch (error) {
-        console.error('❌ Error initializing WebRTC:', error);
     }
-}
 
-async function startVideoCall() {
-    try {
-        console.log('🎥 Starting video call...');
-        
-        // Get user media
-        localStream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: true
+    if (messageSubmit) messageSubmit.addEventListener('click', sendMessage);
+    if (messageInput) {
+        messageInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         });
-        
+        messageInput.addEventListener('input', function () { sendTyping(true); });
+        messageInput.focus();
+    }
+
+    // ---- emoji ------------------------------------------------------------
+    const emojiBtn = document.getElementById('emojiBtn');
+    const emojiPanel = document.getElementById('emojiPanel');
+    if (emojiBtn && emojiPanel) {
+        const emojis = ['😀','😄','😁','😅','😂','🙂','😉','😊','😍','😘','😎','🤩','🤔','😴','😢','😭','😡','👍','👎','👏','🙏','💪','🔥','✨','🎉','❤️','💔','💯','👀','🤝','😱','🤯','🥳','😇','🤗','👋'];
+        emojis.forEach(function (em) {
+            const b = document.createElement('button');
+            b.type = 'button'; b.textContent = em;
+            b.addEventListener('click', function () {
+                messageInput.value += em; messageInput.focus();
+            });
+            emojiPanel.appendChild(b);
+        });
+        emojiBtn.addEventListener('click', function () { emojiPanel.classList.toggle('d-none'); });
+    }
+
+    // ---- history / load more ---------------------------------------------
+    let oldestId = null;
+    (function initOldest() {
+        const nodes = chatLog.querySelectorAll('.message[data-mid]');
+        nodes.forEach(function (n) {
+            const id = parseInt(n.dataset.mid, 10);
+            if (!isNaN(id) && (oldestId === null || id < oldestId)) oldestId = id;
+        });
+        if (nodes.length >= 30) loadMoreWrap.classList.remove('d-none');
+    })();
+
+    let loadingHistory = false;
+    function prependHistory(messages) {
+        const firstChild = chatLog.firstChild;
+        const frag = document.createDocumentFragment();
+        messages.forEach(function (m) { frag.appendChild(buildMessageNode(m)); });
+        chatLog.insertBefore(frag, firstChild);
+    }
+    async function loadMore() {
+        if (loadingHistory || oldestId === null) return;
+        loadingHistory = true;
+        loadMoreBtn.disabled = true;
+        try {
+            const res = await fetch(messagesUrl + '?before=' + oldestId, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            });
+            const data = await res.json();
+            const prevHeight = chatLog.scrollHeight;
+            if (data.messages && data.messages.length) {
+                oldestId = data.messages[0].id;
+                prependHistory(data.messages);
+                chatLog.scrollTop = chatLog.scrollHeight - prevHeight;
+            }
+            if (!data.has_more) loadMoreWrap.classList.add('d-none');
+        } catch (e) {
+        } finally {
+            loadingHistory = false; loadMoreBtn.disabled = false;
+        }
+    }
+    if (loadMoreBtn) loadMoreBtn.addEventListener('click', loadMore);
+    chatLog.addEventListener('scroll', function () {
+        if (chatLog.scrollTop < 40 && !loadMoreWrap.classList.contains('d-none')) loadMore();
+    });
+
+    // ---- WebRTC (perfect negotiation, 1:1) -------------------------------
+    const rtcConfig = { iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+    ]};
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+    const toggleVideoBtn = document.getElementById('toggleVideo');
+    const toggleAudioBtn = document.getElementById('toggleAudio');
+    const toggleVideoCameraBtn = document.getElementById('toggleVideoCamera');
+    const videoStatus = document.getElementById('videoStatus');
+    const remoteVideoStatus = document.getElementById('remoteVideoStatus');
+
+    let pc = null, localStream = null;
+    let makingOffer = false, ignoreOffer = false, polite = false, videoActive = false;
+
+    function remoteStatus(text, cls) {
+        remoteVideoStatus.textContent = text;
+        remoteVideoStatus.className = cls || 'text-body-secondary';
+    }
+
+    function ensurePC() {
+        if (pc) return pc;
+        pc = new RTCPeerConnection(rtcConfig);
+        pc.onnegotiationneeded = async function () {
+            try {
+                makingOffer = true;
+                await pc.setLocalDescription();
+                send({ type: 'video_offer', offer: pc.localDescription });
+            } catch (e) { console.error(e); } finally { makingOffer = false; }
+        };
+        pc.onicecandidate = function (ev) { if (ev.candidate) send({ type: 'ice_candidate', candidate: ev.candidate }); };
+        pc.ontrack = function (ev) {
+            remoteVideo.srcObject = ev.streams[0];
+            remoteStatus('Conectat', 'text-success');
+        };
+        pc.onconnectionstatechange = function () {
+            const st = pc.connectionState;
+            if (st === 'failed' || st === 'disconnected' || st === 'closed') remoteStatus('Deconectat', 'text-warning');
+        };
+        return pc;
+    }
+
+    async function enableMedia() {
+        if (localStream) return localStream;
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localVideo.srcObject = localStream;
-        isVideoEnabled = true;
-        isAudioEnabled = true;
-        
-        // Add tracks to peer connection
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-        });
-        
-        // Update UI
-        updateVideoUI();
-        
-        // Notify other users about video call
-        chatSocket.send(JSON.stringify({
-            type: 'video_call_request',
-            message: `${userName} a pornit videochat-ul. Click pentru a te alătura!`
-        }));
-        
-        // Create and send offer
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        
-        chatSocket.send(JSON.stringify({
-            type: 'video_offer',
-            offer: offer,
-            from_user: userName
-        }));
-        
-        console.log('✅ Video call started successfully');
-        
-    } catch (error) {
-        console.error('❌ Error starting video call:', error);
-        alert('Eroare la pornirea video: ' + error.message);
+        ensurePC();
+        localStream.getTracks().forEach(function (t) { pc.addTrack(t, localStream); });
+        return localStream;
     }
-}
 
-async function joinVideoCall() {
-    try {
-        console.log('🤝 Joining video call...');
-        
-        if (!localStream) {
-            localStream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: true
-            });
-            
-            localVideo.srcObject = localStream;
-            
-            localStream.getTracks().forEach(track => {
-                peerConnection.addTrack(track, localStream);
-            });
-        }
-        
-        isVideoEnabled = true;
-        isAudioEnabled = true;
-        updateVideoUI();
-        
-    } catch (error) {
-        console.error('❌ Error joining video call:', error);
-        alert('Eroare la conectarea la video: ' + error.message);
-    }
-}
-
-function stopVideoCall() {
-    console.log('🛑 Stopping video call...');
-    
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-        localStream = null;
-    }
-    
-    if (remoteStream) {
-        remoteStream.getTracks().forEach(track => track.stop());
-        remoteStream = null;
-    }
-    
-    localVideo.srcObject = null;
-    remoteVideo.srcObject = null;
-    
-    if (peerConnection) {
-        peerConnection.close();
-        initializeWebRTC(); // Reinitialize for next call
-    }
-    
-    isVideoEnabled = false;
-    updateVideoUI();
-    
-    remoteVideoStatus.textContent = 'Așteptând conexiune video...';
-    remoteVideoStatus.className = 'text-muted';
-    
-    // Notify other users
-    chatSocket.send(JSON.stringify({
-        type: 'video_call_end',
-        from_user: userName
-    }));
-}
-
-function toggleAudio() {
-    if (localStream) {
-        const audioTrack = localStream.getAudioTracks()[0];
-        if (audioTrack) {
-            audioTrack.enabled = !audioTrack.enabled;
-            isAudioEnabled = audioTrack.enabled;
+    async function startVideo() {
+        try {
+            polite = false; // the initiator is the impolite peer
+            await enableMedia();
+            videoActive = true;
             updateVideoUI();
-        }
+            send({ type: 'video_call_request' });
+        } catch (e) { alert('Nu am putut accesa camera/microfonul: ' + e.message); }
     }
-}
 
-function toggleVideoCamera() {
-    if (localStream) {
-        const videoTrack = localStream.getVideoTracks()[0];
-        if (videoTrack) {
-            videoTrack.enabled = !videoTrack.enabled;
-            isVideoMuted = !videoTrack.enabled;
-            updateVideoUI();
-        }
-    }
-}
-
-function updateVideoUI() {
-    if (isVideoEnabled) {
-        toggleVideoBtn.innerHTML = '<i class="bi bi-camera-video-off"></i> Oprește Video';
-        toggleVideoBtn.className = 'btn btn-sm btn-danger ms-2';
-        videoStatus.innerHTML = 'Video activ';
-        videoStatus.className = 'badge bg-success';
-        
-        toggleAudioBtn.disabled = false;
-        toggleVideoCameraBtn.disabled = false;
-        
-        // Update audio button
-        if (isAudioEnabled) {
-            toggleAudioBtn.innerHTML = '<i class="bi bi-mic"></i> Microfon';
-            toggleAudioBtn.className = 'btn btn-sm btn-outline-primary';
-        } else {
-            toggleAudioBtn.innerHTML = '<i class="bi bi-mic-mute"></i> Microfon';
-            toggleAudioBtn.className = 'btn btn-sm btn-outline-danger';
-        }
-        
-        // Update video camera button
-        if (isVideoMuted) {
-            toggleVideoCameraBtn.innerHTML = '<i class="bi bi-camera-video-off"></i> Cameră';
-            toggleVideoCameraBtn.className = 'btn btn-sm btn-outline-danger ms-2';
-        } else {
-            toggleVideoCameraBtn.innerHTML = '<i class="bi bi-camera-video"></i> Cameră';
-            toggleVideoCameraBtn.className = 'btn btn-sm btn-outline-primary ms-2';
-        }
-    } else {
-        toggleVideoBtn.innerHTML = '<i class="bi bi-camera-video"></i> Pornește Video';
-        toggleVideoBtn.className = 'btn btn-sm btn-success ms-2';
-        videoStatus.innerHTML = 'Video dezactivat';
-        videoStatus.className = 'badge bg-secondary';
-        
-        toggleAudioBtn.disabled = true;
-        toggleVideoCameraBtn.disabled = true;
-        toggleAudioBtn.innerHTML = '<i class="bi bi-mic"></i> Microfon';
-        toggleVideoCameraBtn.innerHTML = '<i class="bi bi-camera"></i> Cameră';
-    }
-}
-
-// WebRTC Message Handlers
-async function handleVideoOffer(data) {
-    console.log('📞 Received video offer from:', data.from_user);
-    
-    if (!peerConnection) {
-        await initializeWebRTC();
-    }
-    
-    await peerConnection.setRemoteDescription(data.offer);
-    
-    // Join the call automatically or show notification
-    if (!isVideoEnabled) {
-        const shouldJoin = confirm(`${data.from_user} te invită la videochat. Vrei să te alături?`);
-        if (shouldJoin) {
-            await joinVideoCall();
-        }
-    }
-    
-    // Create and send answer
-    const answer = await peerConnection.createAnswer();
-    await peerConnection.setLocalDescription(answer);
-    
-    chatSocket.send(JSON.stringify({
-        type: 'video_answer',
-        answer: answer,
-        from_user: userName
-    }));
-}
-
-async function handleVideoAnswer(data) {
-    console.log('📞 Received video answer from:', data.from_user);
-    await peerConnection.setRemoteDescription(data.answer);
-}
-
-async function handleIceCandidate(data) {
-    console.log('🧊 Received ICE candidate');
-    try {
-        await peerConnection.addIceCandidate(data.candidate);
-    } catch (error) {
-        console.error('Error adding ICE candidate:', error);
-    }
-}
-
-function handleVideoCallRequest(data) {
-    // Add video call notification to chat
-    addMessage({
-        type: 'video_notification',
-        username: 'System',
-        message: data.message,
-        timestamp: formatTime(new Date())
-    });
-}
-
-function handleVideoCallEnd(data) {
-    console.log('📞 Video call ended by:', data.from_user);
-    if (remoteStream) {
+    function stopVideo() {
+        if (localStream) { localStream.getTracks().forEach(function (t) { t.stop(); }); localStream = null; }
+        localVideo.srcObject = null;
         remoteVideo.srcObject = null;
-        remoteVideoStatus.textContent = 'Conexiune închisă';
-        remoteVideoStatus.className = 'text-warning';
+        if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+        videoActive = false;
+        updateVideoUI();
+        remoteStatus('Așteptând conexiune…', 'text-body-secondary');
+        send({ type: 'video_call_end' });
     }
-}
 
-// Event Listeners for Video Controls
-toggleVideoBtn.addEventListener('click', function() {
-    if (isVideoEnabled) {
-        stopVideoCall();
-    } else {
-        startVideoCall();
+    async function applyDescription(desc) {
+        ensurePC();
+        const collision = desc.type === 'offer' && (makingOffer || pc.signalingState !== 'stable');
+        ignoreOffer = !polite && collision;
+        if (ignoreOffer) return;
+        await pc.setRemoteDescription(desc);
+        if (desc.type === 'offer') {
+            await pc.setLocalDescription();
+            send({ type: 'video_answer', answer: pc.localDescription });
+        }
     }
-});
 
-toggleAudioBtn.addEventListener('click', toggleAudio);
-toggleVideoCameraBtn.addEventListener('click', toggleVideoCamera);
+    async function handleVideoOffer(data) {
+        if (!videoActive) {
+            polite = true; // the joiner is the polite peer
+            if (!confirm(data.from_user + ' te invită la videochat. Te alături?')) return;
+            try { await enableMedia(); videoActive = true; updateVideoUI(); }
+            catch (e) { alert('Nu am putut accesa camera/microfonul: ' + e.message); return; }
+        }
+        try { await applyDescription(data.offer); } catch (e) { console.error(e); }
+    }
+    async function handleVideoAnswer(data) {
+        try { await applyDescription(data.answer); } catch (e) { console.error(e); }
+    }
+    async function handleIceCandidate(data) {
+        try { if (pc) await pc.addIceCandidate(data.candidate); }
+        catch (e) { if (!ignoreOffer) console.error(e); }
+    }
+    function handleVideoCallEnd() {
+        remoteVideo.srcObject = null;
+        remoteStatus('Conexiune închisă', 'text-warning');
+    }
 
-// Initialize WebRTC when page loads
-initializeWebRTC();
+    function updateVideoUI() {
+        if (!toggleVideoBtn) return;
+        if (videoActive) {
+            toggleVideoBtn.innerHTML = '<i class="bi bi-camera-video-off"></i> Oprește';
+            toggleVideoBtn.className = 'btn btn-sm btn-danger';
+            videoStatus.textContent = 'Video activ'; videoStatus.className = 'badge text-bg-success';
+            toggleAudioBtn.disabled = false; toggleVideoCameraBtn.disabled = false;
+        } else {
+            toggleVideoBtn.innerHTML = '<i class="bi bi-camera-video"></i> Pornește';
+            toggleVideoBtn.className = 'btn btn-sm btn-success';
+            videoStatus.textContent = 'Video dezactivat'; videoStatus.className = 'badge text-bg-secondary';
+            toggleAudioBtn.disabled = true; toggleVideoCameraBtn.disabled = true;
+        }
+    }
+
+    if (toggleVideoBtn) toggleVideoBtn.addEventListener('click', function () {
+        if (videoActive) stopVideo(); else startVideo();
+    });
+    if (toggleAudioBtn) toggleAudioBtn.addEventListener('click', function () {
+        if (!localStream) return;
+        const t = localStream.getAudioTracks()[0];
+        if (t) {
+            t.enabled = !t.enabled;
+            toggleAudioBtn.className = 'btn btn-sm ' + (t.enabled ? 'btn-outline-primary' : 'btn-outline-danger');
+            toggleAudioBtn.innerHTML = '<i class="bi ' + (t.enabled ? 'bi-mic' : 'bi-mic-mute') + '"></i> Microfon';
+        }
+    });
+    if (toggleVideoCameraBtn) toggleVideoCameraBtn.addEventListener('click', function () {
+        if (!localStream) return;
+        const t = localStream.getVideoTracks()[0];
+        if (t) {
+            t.enabled = !t.enabled;
+            toggleVideoCameraBtn.className = 'btn btn-sm ' + (t.enabled ? 'btn-outline-primary' : 'btn-outline-danger');
+            toggleVideoCameraBtn.innerHTML = '<i class="bi ' + (t.enabled ? 'bi-camera-video' : 'bi-camera-video-off') + '"></i> Cameră';
+        }
+    });
+
+    // ---- go ---------------------------------------------------------------
+    autoScroll();
+    connect();
+})();
 </script>
-
-<script id="room-name" type="application/json">{{ room_name|escapejs }}</script>
 {% endblock %}

@@ -1,32 +1,35 @@
 {% extends 'chat/base.html' %}
 
-{% block title %}Camere de Chat{% endblock %}
+{% block title %}Camere{% endblock %}
 
 {% block content %}
-<div class="row">
-    <div class="col-md-8">
-        <h1 class="mb-4">
-            <i class="bi bi-chat-square-dots"></i> Camere de Chat Disponibile
-        </h1>
-        
+<div class="row g-4">
+    <div class="col-lg-8">
+        <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+            <h1 class="h3 mb-0">
+                <i class="bi bi-chat-square-dots"></i> Camere de chat
+            </h1>
+            <span class="badge text-bg-secondary">{{ rooms|length }} {{ rooms|length|pluralize:"cameră,camere" }}</span>
+        </div>
+
         {% if rooms %}
-            <div class="row">
+            <div class="row g-3">
                 {% for room in rooms %}
-                <div class="col-md-6 mb-3">
-                    <div class="card h-100">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <i class="bi bi-door-open"></i> {{ room.name }}
+                <div class="col-sm-6">
+                    <div class="card h-100 shadow-sm">
+                        <div class="card-body d-flex flex-column">
+                            <h5 class="card-title text-truncate">
+                                <i class="bi bi-door-open text-primary"></i> {{ room.name }}
                             </h5>
                             {% if room.description %}
-                                <p class="card-text text-muted">{{ room.description }}</p>
+                                <p class="card-text text-body-secondary small">{{ room.description }}</p>
                             {% endif %}
-                            <p class="card-text">
-                                <small class="text-muted">
-                                    <i class="bi bi-clock"></i> Creată: {{ room.created_at|date:"d M Y, H:i" }}
+                            <p class="card-text mt-auto mb-2">
+                                <small class="text-body-secondary">
+                                    <i class="bi bi-clock"></i> {{ room.created_at|date:"d M Y, H:i" }}
                                 </small>
                             </p>
-                            <a href="{% url 'chat:room' room.name %}" class="btn btn-primary">
+                            <a href="{% url 'chat:room' room.name %}" class="btn btn-brand">
                                 <i class="bi bi-arrow-right-circle"></i> Intră în cameră
                             </a>
                         </div>
@@ -35,60 +38,61 @@
                 {% endfor %}
             </div>
         {% else %}
-            <div class="alert alert-info">
-                <i class="bi bi-info-circle"></i> Nu există camere de chat încă. Creează prima cameră!
+            <div class="surface p-4 text-center text-body-secondary">
+                <i class="bi bi-emoji-smile fs-1 d-block mb-2"></i>
+                Nu există camere încă. {% if user.is_authenticated %}Creează prima!{% else %}Conectează-te ca să creezi una.{% endif %}
             </div>
         {% endif %}
     </div>
-    
-    <div class="col-md-4">
-        <div class="card">
-            <div class="card-header">
-                <h5 class="card-title mb-0">
-                    <i class="bi bi-plus-circle"></i> Creează o Cameră Nouă
-                </h5>
+
+    <div class="col-lg-4">
+        <div class="card shadow-sm">
+            <div class="card-header bg-transparent">
+                <h5 class="card-title mb-0"><i class="bi bi-plus-circle"></i> Cameră nouă</h5>
             </div>
             <div class="card-body">
                 {% if user.is_authenticated %}
                     <form id="createRoomForm">
                         {% csrf_token %}
                         <div class="mb-3">
-                            <label for="room_name" class="form-label">Numele Camerei</label>
-                            <input type="text" class="form-control" id="room_name" name="room_name" required>
+                            <label for="room_name" class="form-label">Nume cameră</label>
+                            <input type="text" class="form-control" id="room_name" name="room_name"
+                                   maxlength="100" placeholder="ex: general" required>
+                            <div class="form-text">Litere, cifre și underscore.</div>
                         </div>
                         <div class="mb-3">
-                            <label for="description" class="form-label">Descriere (opțional)</label>
-                            <textarea class="form-control" id="description" name="description" rows="3"></textarea>
+                            <label for="description" class="form-label">Descriere <small class="text-body-secondary">(opțional)</small></label>
+                            <textarea class="form-control" id="description" name="description" rows="2" maxlength="1000"></textarea>
                         </div>
-                        <button type="submit" class="btn btn-success">
-                            <i class="bi bi-plus"></i> Creează Camera
-                        </button>
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-success">
+                                <i class="bi bi-plus-lg"></i> Creează
+                            </button>
+                        </div>
                     </form>
                     <div id="message" class="mt-3"></div>
                 {% else %}
-                    <p class="text-muted">
-                        <i class="bi bi-exclamation-triangle"></i> 
-                        Trebuie să te conectezi pentru a crea o cameră de chat.
+                    <p class="text-body-secondary mb-3">
+                        <i class="bi bi-lock"></i> Conectează-te pentru a crea o cameră.
                     </p>
-                    <a href="{% url 'chat:login' %}" class="btn btn-primary">
-                        <i class="bi bi-box-arrow-in-right"></i> Conectează-te
-                    </a>
+                    <div class="d-grid gap-2">
+                        <a href="{% url 'chat:login' %}" class="btn btn-brand"><i class="bi bi-box-arrow-in-right"></i> Conectare</a>
+                        <a href="{% url 'chat:register' %}" class="btn btn-outline-secondary"><i class="bi bi-person-plus"></i> Cont nou</a>
+                    </div>
                 {% endif %}
             </div>
         </div>
-        
-        <div class="card mt-4">
-            <div class="card-header">
-                <h6 class="card-title mb-0">
-                    <i class="bi bi-info-circle"></i> Cum să folosești aplicația
-                </h6>
+
+        <div class="card shadow-sm mt-3">
+            <div class="card-header bg-transparent">
+                <h6 class="card-title mb-0"><i class="bi bi-info-circle"></i> Cum funcționează</h6>
             </div>
             <div class="card-body">
-                <ul class="list-unstyled small">
-                    <li class="mb-2"><i class="bi bi-check text-success"></i> Conectează-te cu contul tău</li>
-                    <li class="mb-2"><i class="bi bi-check text-success"></i> Creează o cameră nouă sau intră într-una existentă</li>
-                    <li class="mb-2"><i class="bi bi-check text-success"></i> Chatul funcționează în timp real cu WebSockets</li>
-                    <li class="mb-2"><i class="bi bi-check text-success"></i> Mesajele sunt salvate automat</li>
+                <ul class="list-unstyled small mb-0">
+                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Chat în timp real prin WebSockets</li>
+                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Vezi cine e online și cine scrie</li>
+                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Apel video 1:1 (WebRTC)</li>
+                    <li><i class="bi bi-check2-circle text-success"></i> Mesajele se salvează automat</li>
                 </ul>
             </div>
         </div>
@@ -98,30 +102,36 @@
 
 {% block scripts %}
 <script>
-document.getElementById('createRoomForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    
-    const formData = new FormData(this);
+(function () {
+    const form = document.getElementById('createRoomForm');
+    if (!form) return;
     const messageDiv = document.getElementById('message');
-    
-    fetch('{% url "chat:create_room" %}', {
-        method: 'POST',
-        body: formData,
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            messageDiv.innerHTML = '<div class="alert alert-success"><i class="bi bi-check-circle"></i> Camera a fost creată cu succes!</div>';
-            setTimeout(() => {
-                window.location.href = `/room/${data.room_name}/`;
-            }, 1500);
-        } else {
-            messageDiv.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> ${data.error}</div>`;
-        }
-    })
-    .catch(error => {
-        messageDiv.innerHTML = '<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> A apărut o eroare.</div>';
+
+    form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        fetch('{% url "chat:create_room" %}', {
+            method: 'POST',
+            body: new FormData(form),
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                messageDiv.innerHTML =
+                    '<div class="alert alert-success py-2 mb-0"><i class="bi bi-check-circle"></i> Cameră creată!</div>';
+                setTimeout(() => { window.location.href = '/room/' + encodeURIComponent(data.room_name) + '/'; }, 800);
+            } else {
+                const alert = document.createElement('div');
+                alert.className = 'alert alert-danger py-2 mb-0';
+                alert.textContent = data.error || 'A apărut o eroare.';
+                messageDiv.replaceChildren(alert);
+            }
+        })
+        .catch(() => {
+            messageDiv.innerHTML =
+                '<div class="alert alert-danger py-2 mb-0"><i class="bi bi-exclamation-triangle"></i> A apărut o eroare.</div>';
+        });
     });
-});
+})();
 </script>
 {% endblock %}
