@@ -10,23 +10,70 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import os
 from pathlib import Path
+
+from django.core.exceptions import ImproperlyConfigured
+
+
+def _env_bool(name, default=False):
+    return os.environ.get(name, str(default)).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _env_list(name, default=''):
+    return [item.strip() for item in os.environ.get(name, default).split(',') if item.strip()]
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-your-secret-key-here'
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Defaults to False so a missing/typo'd env var fails closed, not open.
+DEBUG = _env_bool('DJANGO_DEBUG', False)
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+# SECURITY WARNING: keep the secret key used in production secret!
+# No insecure fallback in production: a predictable key lets anyone forge
+# sessions and password-reset tokens. Refuse to boot without one.
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = 'django-insecure-dev-only-do-not-use-in-production'
+    else:
+        raise ImproperlyConfigured(
+            'DJANGO_SECRET_KEY environment variable is required when DEBUG is off.'
+        )
 
+ALLOWED_HOSTS = _env_list('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1,video.micutu.com')
+
+CSRF_TRUSTED_ORIGINS = _env_list(
+    'DJANGO_CSRF_TRUSTED_ORIGINS',
+    'https://video.micutu.com',
+)
+
+# We sit behind nginx/Cloudflare which terminate TLS, so trust the proxy header.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Cookies
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
+
+# Misc hardening (defense in depth; nginx/Cloudflare add some of these too)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+X_FRAME_OPTIONS = 'DENY'
+
+# TLS redirect is handled at the nginx layer; enabling it here would loop.
+SECURE_SSL_REDIRECT = False
+if not DEBUG:
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
 
 # Application definition
 
@@ -84,17 +131,41 @@ DATABASES = {
 }
 
 # Channels configuration
-CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels.layers.InMemoryChannelLayer'
+# Use Redis in production (survives restarts, scales across workers/processes).
+# Falls back to the in-memory layer for local dev when REDIS_URL is unset.
+REDIS_URL = os.environ.get('REDIS_URL', '').strip()
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {'hosts': [REDIS_URL]},
+        }
     }
-}
+else:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        }
+    }
 
-# Configurare pentru debugging WebSockets
-if DEBUG:
-    import logging
-    logging.basicConfig(level=logging.DEBUG)
-    logging.getLogger('channels').setLevel(logging.DEBUG)
+# Logging: keep it quiet by default and never dump message payloads at INFO.
+LOG_LEVEL = os.environ.get('DJANGO_LOG_LEVEL', 'INFO').upper()
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'simple': {'format': '[{asctime}] {levelname} {name}: {message}', 'style': '{'},
+    },
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'simple'},
+    },
+    'root': {'handlers': ['console'], 'level': LOG_LEVEL},
+    'loggers': {
+        # Channels/daphne are very chatty on DEBUG; pin them up a notch.
+        'channels': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'daphne': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+    },
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
@@ -131,6 +202,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
 STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
