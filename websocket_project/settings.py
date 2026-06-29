@@ -216,6 +216,14 @@ LOGIN_URL = '/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/'
 
+# WebRTC ICE servers. STUN is enough on most networks; TURN relays media when
+# peers are behind symmetric NATs/firewalls. TURN uses coturn's shared-secret
+# (REST) mechanism — the app hands out short-lived HMAC credentials.
+STUN_URLS = _env_list('STUN_URLS', 'stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302')
+TURN_URLS = _env_list('TURN_URLS', '')  # e.g. turn:video.micutu.com:3478,turns:video.micutu.com:5349
+TURN_SHARED_SECRET = os.environ.get('TURN_SHARED_SECRET', '')
+TURN_CREDENTIAL_TTL = int(os.environ.get('TURN_CREDENTIAL_TTL', '86400'))
+
 # Allow public self-registration. Set ALLOW_REGISTRATION=False to lock it down.
 ALLOW_REGISTRATION = _env_bool('ALLOW_REGISTRATION', True)
 # Max successful registrations allowed per client IP per hour (abuse control).

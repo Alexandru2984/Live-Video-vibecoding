@@ -31,9 +31,15 @@
     }
     .emoji-panel button:hover { background: var(--bs-secondary-bg); }
 
-    .video-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    @media (max-width: 767.98px) { .video-grid { grid-template-columns: 1fr; } }
-    .video-grid video { width: 100%; aspect-ratio: 4 / 3; background: #000; border-radius: 12px; object-fit: cover; }
+    .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+    .video-tile { position: relative; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 4 / 3; }
+    .video-tile video { width: 100%; height: 100%; object-fit: cover; background: #000; }
+    .video-tile .video-label {
+        position: absolute; left: 8px; right: 8px; bottom: 8px;
+        display: flex; justify-content: space-between; align-items: center; gap: .5rem;
+        color: #fff; font-size: .8rem; text-shadow: 0 1px 3px rgba(0,0,0,.9);
+    }
+    .video-tile .video-label .btn { --bs-btn-padding-y: .1rem; --bs-btn-padding-x: .4rem; }
     #localVideo { transform: scaleX(-1); }
 </style>
 {% endblock %}
@@ -139,37 +145,35 @@
 
 <div class="card shadow-sm mt-3">
     <div class="card-header bg-transparent d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <span><i class="bi bi-camera-video"></i> Video chat</span>
+        <span>
+            <i class="bi bi-camera-video"></i> Video chat
+            <span class="badge text-bg-secondary ms-1" id="callCount" title="Participanți în apel">0</span>
+        </span>
         <div class="d-flex align-items-center gap-2">
-            <span class="badge text-bg-secondary" id="videoStatus">Video dezactivat</span>
+            <span class="badge text-bg-secondary" id="videoStatus">Neconectat</span>
             {% if user.is_authenticated %}
-            <button id="toggleVideo" class="btn btn-sm btn-success">
-                <i class="bi bi-camera-video"></i> Pornește
+            <button id="toggleCall" class="btn btn-sm btn-success">
+                <i class="bi bi-camera-video"></i> Intră în apel
             </button>
             {% endif %}
         </div>
     </div>
     <div class="card-body">
-        <div class="video-grid">
-            <div>
-                <h6 class="text-center mb-2"><i class="bi bi-person-circle"></i> Tu</h6>
+        <div class="video-grid" id="videoGrid">
+            <div class="video-tile" id="localTile" hidden>
                 <video id="localVideo" autoplay muted playsinline></video>
-                <div class="mt-2 text-center">
-                    <button id="toggleAudio" class="btn btn-sm btn-outline-primary" disabled>
-                        <i class="bi bi-mic"></i> Microfon
-                    </button>
-                    <button id="toggleVideoCamera" class="btn btn-sm btn-outline-primary" disabled>
-                        <i class="bi bi-camera-video"></i> Cameră
-                    </button>
+                <div class="video-label">
+                    <span><i class="bi bi-person-circle"></i> Tu</span>
+                    <span>
+                        <button id="toggleAudio" class="btn btn-sm btn-light" title="Microfon"><i class="bi bi-mic"></i></button>
+                        <button id="toggleVideoCamera" class="btn btn-sm btn-light" title="Cameră"><i class="bi bi-camera-video"></i></button>
+                    </span>
                 </div>
             </div>
-            <div>
-                <h6 class="text-center mb-2"><i class="bi bi-people"></i> Partener</h6>
-                <video id="remoteVideo" autoplay playsinline></video>
-                <div class="mt-2 text-center">
-                    <small class="text-body-secondary" id="remoteVideoStatus">Așteptând conexiune…</small>
-                </div>
-            </div>
+            <!-- remote tiles injected here -->
+        </div>
+        <div class="text-body-secondary small mt-2">
+            <i class="bi bi-info-circle"></i> Intră în apel ca să vezi și să fii văzut. Funcționează cu mai mulți participanți.
         </div>
     </div>
 </div>
@@ -331,6 +335,8 @@
             li.append(dot, name);
             userList.appendChild(li);
         });
+        // A peer that left the room can no longer be in the call — tear it down.
+        peers.forEach(function (st, user) { if (users.indexOf(user) === -1) closePeer(user); });
     }
 
     const typingUsers = new Map();
@@ -380,13 +386,15 @@
                 case 'presence': updatePresence(data); break;
                 case 'typing': updateTyping(data); break;
                 case 'error': showError(data.error); break;
-                case 'video_offer': handleVideoOffer(data); break;
-                case 'video_answer': handleVideoAnswer(data); break;
-                case 'ice_candidate': handleIceCandidate(data); break;
-                case 'video_call_request':
-                    addMessage({ type: 'video_call_request', username: 'Video', message: data.message });
+                case 'webrtc_signal': handleSignal(data); break;
+                case 'call_join':
+                    addMessage({ type: 'video_notification', username: 'Video', message: data.username + ' a intrat în videochat' });
+                    if (inCall && data.username !== userName) send({ type: 'call_present', to: data.username });
                     break;
-                case 'video_call_end': handleVideoCallEnd(data); break;
+                case 'call_present':
+                    if (inCall && data.username !== userName && !peers.has(data.username)) createPeer(data.username);
+                    break;
+                case 'call_leave': closePeer(data.username); break;
                 default: break;
             }
         };
@@ -506,137 +514,173 @@
         if (chatLog.scrollTop < 40 && !loadMoreWrap.classList.contains('d-none')) loadMore();
     });
 
-    // ---- WebRTC (perfect negotiation, 1:1) -------------------------------
-    const rtcConfig = { iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-    ]};
+    // ---- WebRTC mesh (N peers, perfect negotiation per connection) --------
     const localVideo = document.getElementById('localVideo');
-    const remoteVideo = document.getElementById('remoteVideo');
-    const toggleVideoBtn = document.getElementById('toggleVideo');
+    const localTile = document.getElementById('localTile');
+    const videoGrid = document.getElementById('videoGrid');
+    const toggleCallBtn = document.getElementById('toggleCall');
     const toggleAudioBtn = document.getElementById('toggleAudio');
     const toggleVideoCameraBtn = document.getElementById('toggleVideoCamera');
     const videoStatus = document.getElementById('videoStatus');
-    const remoteVideoStatus = document.getElementById('remoteVideoStatus');
+    const callCount = document.getElementById('callCount');
 
-    let pc = null, localStream = null;
-    let makingOffer = false, ignoreOffer = false, polite = false, videoActive = false;
+    let iceConfig = { iceServers: [
+        { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    ]};
+    let localStream = null;
+    let inCall = false;
+    // remoteUser -> { pc, makingOffer, ignoreOffer, polite }
+    const peers = new Map();
 
-    function remoteStatus(text, cls) {
-        remoteVideoStatus.textContent = text;
-        remoteVideoStatus.className = cls || 'text-body-secondary';
+    async function loadIceConfig() {
+        try {
+            const r = await fetch('/ice-servers/', { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            if (r.ok) {
+                const j = await r.json();
+                if (j.iceServers && j.iceServers.length) iceConfig = { iceServers: j.iceServers };
+            }
+        } catch (e) { /* fall back to the default STUN config */ }
     }
 
-    function ensurePC() {
-        if (pc) return pc;
-        pc = new RTCPeerConnection(rtcConfig);
+    function signalTo(to, kind, payload) { send({ type: 'webrtc_signal', to: to, kind: kind, payload: payload }); }
+
+    function tileId(user) {
+        return 'tile-' + btoa(unescape(encodeURIComponent(user))).replace(/[^a-zA-Z0-9]/g, '');
+    }
+
+    function ensureRemoteTile(user) {
+        let tile = document.getElementById(tileId(user));
+        if (tile) return tile.querySelector('video');
+        tile = document.createElement('div');
+        tile.className = 'video-tile';
+        tile.id = tileId(user);
+        const v = document.createElement('video');
+        v.autoplay = true; v.playsInline = true;
+        const label = document.createElement('div');
+        label.className = 'video-label';
+        const span = document.createElement('span');
+        span.textContent = user;            // textContent -> XSS-safe
+        label.appendChild(span);
+        tile.append(v, label);
+        videoGrid.appendChild(tile);
+        updateCallCount();
+        return v;
+    }
+
+    function removeRemoteTile(user) {
+        const tile = document.getElementById(tileId(user));
+        if (tile) tile.remove();
+        updateCallCount();
+    }
+
+    function updateCallCount() {
+        callCount.textContent = String(peers.size + (inCall ? 1 : 0));
+    }
+
+    function createPeer(remote) {
+        // Deterministic politeness avoids a glare deadlock when both sides offer.
+        const polite = userName < remote;
+        const pc = new RTCPeerConnection(iceConfig);
+        const state = { pc: pc, makingOffer: false, ignoreOffer: false, polite: polite };
+        peers.set(remote, state);
+
+        if (localStream) localStream.getTracks().forEach(function (t) { pc.addTrack(t, localStream); });
+
         pc.onnegotiationneeded = async function () {
             try {
-                makingOffer = true;
+                state.makingOffer = true;
                 await pc.setLocalDescription();
-                send({ type: 'video_offer', offer: pc.localDescription });
-            } catch (e) { console.error(e); } finally { makingOffer = false; }
+                signalTo(remote, 'offer', pc.localDescription);
+            } catch (e) { console.error(e); } finally { state.makingOffer = false; }
         };
-        pc.onicecandidate = function (ev) { if (ev.candidate) send({ type: 'ice_candidate', candidate: ev.candidate }); };
-        pc.ontrack = function (ev) {
-            remoteVideo.srcObject = ev.streams[0];
-            remoteStatus('Conectat', 'text-success');
-        };
+        pc.onicecandidate = function (ev) { if (ev.candidate) signalTo(remote, 'candidate', ev.candidate); };
+        pc.ontrack = function (ev) { ensureRemoteTile(remote).srcObject = ev.streams[0]; };
         pc.onconnectionstatechange = function () {
-            const st = pc.connectionState;
-            if (st === 'failed' || st === 'disconnected' || st === 'closed') remoteStatus('Deconectat', 'text-warning');
+            if (pc.connectionState === 'failed') { try { pc.restartIce(); } catch (e) {} }
         };
-        return pc;
+        updateCallCount();
+        return state;
     }
 
-    async function enableMedia() {
-        if (localStream) return localStream;
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideo.srcObject = localStream;
-        ensurePC();
-        localStream.getTracks().forEach(function (t) { pc.addTrack(t, localStream); });
-        return localStream;
+    function closePeer(remote) {
+        const st = peers.get(remote);
+        if (st) { try { st.pc.close(); } catch (e) {} peers.delete(remote); }
+        removeRemoteTile(remote);
     }
 
-    async function startVideo() {
+    async function handleSignal(data) {
+        if (!inCall) return;                // ignore stray signals when not in a call
+        const remote = data.from_user;
+        const st = peers.get(remote) || createPeer(remote);
+        const pc = st.pc;
         try {
-            polite = false; // the initiator is the impolite peer
-            await enableMedia();
-            videoActive = true;
-            updateVideoUI();
-            send({ type: 'video_call_request' });
-        } catch (e) { alert('Nu am putut accesa camera/microfonul: ' + e.message); }
+            if (data.kind === 'offer' || data.kind === 'answer') {
+                const desc = data.payload;
+                const collision = desc.type === 'offer' && (st.makingOffer || pc.signalingState !== 'stable');
+                st.ignoreOffer = !st.polite && collision;
+                if (st.ignoreOffer) return;
+                await pc.setRemoteDescription(desc);
+                if (desc.type === 'offer') {
+                    await pc.setLocalDescription();
+                    signalTo(remote, 'answer', pc.localDescription);
+                }
+            } else if (data.kind === 'candidate') {
+                try { await pc.addIceCandidate(data.payload); }
+                catch (e) { if (!st.ignoreOffer) console.error(e); }
+            }
+        } catch (e) { console.error(e); }
     }
 
-    function stopVideo() {
+    async function joinCall() {
+        if (inCall) return;
+        await loadIceConfig();
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        } catch (e) { alert('Nu am putut accesa camera/microfonul: ' + e.message); return; }
+        localVideo.srcObject = localStream;
+        localTile.hidden = false;
+        inCall = true;
+        updateCallUI();
+        // Existing call members reply with `call_present`; then we offer to them.
+        send({ type: 'call_join' });
+    }
+
+    function leaveCall() {
+        inCall = false;
+        send({ type: 'call_leave' });
+        peers.forEach(function (st, user) { try { st.pc.close(); } catch (e) {} removeRemoteTile(user); });
+        peers.clear();
         if (localStream) { localStream.getTracks().forEach(function (t) { t.stop(); }); localStream = null; }
         localVideo.srcObject = null;
-        remoteVideo.srcObject = null;
-        if (pc) { try { pc.close(); } catch (e) {} pc = null; }
-        videoActive = false;
-        updateVideoUI();
-        remoteStatus('Așteptând conexiune…', 'text-body-secondary');
-        send({ type: 'video_call_end' });
+        localTile.hidden = true;
+        updateCallUI();
     }
 
-    async function applyDescription(desc) {
-        ensurePC();
-        const collision = desc.type === 'offer' && (makingOffer || pc.signalingState !== 'stable');
-        ignoreOffer = !polite && collision;
-        if (ignoreOffer) return;
-        await pc.setRemoteDescription(desc);
-        if (desc.type === 'offer') {
-            await pc.setLocalDescription();
-            send({ type: 'video_answer', answer: pc.localDescription });
-        }
-    }
-
-    async function handleVideoOffer(data) {
-        if (!videoActive) {
-            polite = true; // the joiner is the polite peer
-            if (!confirm(data.from_user + ' te invită la videochat. Te alături?')) return;
-            try { await enableMedia(); videoActive = true; updateVideoUI(); }
-            catch (e) { alert('Nu am putut accesa camera/microfonul: ' + e.message); return; }
-        }
-        try { await applyDescription(data.offer); } catch (e) { console.error(e); }
-    }
-    async function handleVideoAnswer(data) {
-        try { await applyDescription(data.answer); } catch (e) { console.error(e); }
-    }
-    async function handleIceCandidate(data) {
-        try { if (pc) await pc.addIceCandidate(data.candidate); }
-        catch (e) { if (!ignoreOffer) console.error(e); }
-    }
-    function handleVideoCallEnd() {
-        remoteVideo.srcObject = null;
-        remoteStatus('Conexiune închisă', 'text-warning');
-    }
-
-    function updateVideoUI() {
-        if (!toggleVideoBtn) return;
-        if (videoActive) {
-            toggleVideoBtn.innerHTML = '<i class="bi bi-camera-video-off"></i> Oprește';
-            toggleVideoBtn.className = 'btn btn-sm btn-danger';
-            videoStatus.textContent = 'Video activ'; videoStatus.className = 'badge text-bg-success';
+    function updateCallUI() {
+        if (inCall) {
+            toggleCallBtn.innerHTML = '<i class="bi bi-telephone-x"></i> Ieși din apel';
+            toggleCallBtn.className = 'btn btn-sm btn-danger';
+            videoStatus.textContent = 'În apel'; videoStatus.className = 'badge text-bg-success';
             toggleAudioBtn.disabled = false; toggleVideoCameraBtn.disabled = false;
         } else {
-            toggleVideoBtn.innerHTML = '<i class="bi bi-camera-video"></i> Pornește';
-            toggleVideoBtn.className = 'btn btn-sm btn-success';
-            videoStatus.textContent = 'Video dezactivat'; videoStatus.className = 'badge text-bg-secondary';
+            toggleCallBtn.innerHTML = '<i class="bi bi-camera-video"></i> Intră în apel';
+            toggleCallBtn.className = 'btn btn-sm btn-success';
+            videoStatus.textContent = 'Neconectat'; videoStatus.className = 'badge text-bg-secondary';
             toggleAudioBtn.disabled = true; toggleVideoCameraBtn.disabled = true;
         }
+        updateCallCount();
     }
 
-    if (toggleVideoBtn) toggleVideoBtn.addEventListener('click', function () {
-        if (videoActive) stopVideo(); else startVideo();
+    if (toggleCallBtn) toggleCallBtn.addEventListener('click', function () {
+        if (inCall) leaveCall(); else joinCall();
     });
     if (toggleAudioBtn) toggleAudioBtn.addEventListener('click', function () {
         if (!localStream) return;
         const t = localStream.getAudioTracks()[0];
         if (t) {
             t.enabled = !t.enabled;
-            toggleAudioBtn.className = 'btn btn-sm ' + (t.enabled ? 'btn-outline-primary' : 'btn-outline-danger');
-            toggleAudioBtn.innerHTML = '<i class="bi ' + (t.enabled ? 'bi-mic' : 'bi-mic-mute') + '"></i> Microfon';
+            toggleAudioBtn.className = 'btn btn-sm ' + (t.enabled ? 'btn-light' : 'btn-danger');
+            toggleAudioBtn.innerHTML = '<i class="bi ' + (t.enabled ? 'bi-mic' : 'bi-mic-mute') + '"></i>';
         }
     });
     if (toggleVideoCameraBtn) toggleVideoCameraBtn.addEventListener('click', function () {
@@ -644,8 +688,8 @@
         const t = localStream.getVideoTracks()[0];
         if (t) {
             t.enabled = !t.enabled;
-            toggleVideoCameraBtn.className = 'btn btn-sm ' + (t.enabled ? 'btn-outline-primary' : 'btn-outline-danger');
-            toggleVideoCameraBtn.innerHTML = '<i class="bi ' + (t.enabled ? 'bi-camera-video' : 'bi-camera-video-off') + '"></i> Cameră';
+            toggleVideoCameraBtn.className = 'btn btn-sm ' + (t.enabled ? 'btn-light' : 'btn-danger');
+            toggleVideoCameraBtn.innerHTML = '<i class="bi ' + (t.enabled ? 'bi-camera-video' : 'bi-camera-video-off') + '"></i>';
         }
     });
 

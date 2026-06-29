@@ -1,3 +1,8 @@
+import base64
+import hashlib
+import hmac
+import time
+
 from django.conf import settings
 from django.contrib.auth import login, views as auth_views
 from django.contrib.auth.decorators import login_required
@@ -128,6 +133,29 @@ def register(request):
         'form': form,
         'rate_error': rate_error,
     })
+
+
+@login_required
+def ice_servers(request):
+    """ICE servers for WebRTC. TURN credentials are short-lived HMAC tokens
+    (coturn shared-secret mechanism) so we never ship a static password."""
+    servers = []
+    if settings.STUN_URLS:
+        servers.append({'urls': settings.STUN_URLS})
+    if settings.TURN_URLS and settings.TURN_SHARED_SECRET:
+        expiry = int(time.time()) + settings.TURN_CREDENTIAL_TTL
+        username = f'{expiry}:{request.user.username}'
+        digest = hmac.new(
+            settings.TURN_SHARED_SECRET.encode('utf-8'),
+            username.encode('utf-8'),
+            hashlib.sha1,
+        ).digest()
+        servers.append({
+            'urls': settings.TURN_URLS,
+            'username': username,
+            'credential': base64.b64encode(digest).decode('ascii'),
+        })
+    return JsonResponse({'iceServers': servers})
 
 
 class CustomLoginView(auth_views.LoginView):

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import threading
@@ -50,6 +51,16 @@ def _presence_list(room):
         return sorted(_room_members.get(room, {}))
 
 
+def _user_group(room_group_name, username):
+    """Per-user channel group, used to deliver targeted WebRTC signalling.
+
+    Usernames can contain characters that are invalid in channel group names,
+    so we hash them into a safe, fixed suffix.
+    """
+    digest = hashlib.sha1(username.encode('utf-8')).hexdigest()[:20]
+    return f'{room_group_name}.u.{digest}'
+
+
 class ChatConsumer(AsyncWebsocketConsumer):
     """Per-room chat + WebRTC signalling.
 
@@ -81,7 +92,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=4404)  # 4404 = not found (app-defined)
             return
 
+        self.user_group_name = _user_group(self.room_group_name, self.user.username)
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
+        await self.channel_layer.group_add(self.user_group_name, self.channel_name)
         await self.accept()
         logger.debug('User %s connected to room %s', self.user.username, self.room_name)
 
@@ -102,6 +115,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
             await self.broadcast_presence()
             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+            await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
 
     async def broadcast_presence(self):
         await self.channel_layer.group_send(
@@ -135,11 +149,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         message_type = data.get('type', 'message')
 
         handlers = {
-            'video_offer': self.handle_video_offer,
-            'video_answer': self.handle_video_answer,
-            'ice_candidate': self.handle_ice_candidate,
-            'video_call_request': self.handle_video_call_request,
-            'video_call_end': self.handle_video_call_end,
+            'webrtc_signal': self.handle_webrtc_signal,
+            'call_join': self.handle_call_join,
+            'call_leave': self.handle_call_leave,
+            'call_present': self.handle_call_present,
             'typing': self.handle_typing,
         }
         handler = handlers.get(message_type)
@@ -170,51 +183,42 @@ class ChatConsumer(AsyncWebsocketConsumer):
             },
         )
 
-    # -- WebRTC signalling (identity stamped server-side) -------------------
-    async def handle_video_offer(self, data):
-        offer = data.get('offer')
-        if offer is None:
+    # -- WebRTC mesh signalling (per-peer, identity stamped server-side) -----
+    async def handle_webrtc_signal(self, data):
+        """Relay one SDP/ICE message to a single target peer in the room."""
+        to = data.get('to')
+        kind = data.get('kind')
+        payload = data.get('payload')
+        if not isinstance(to, str) or kind not in ('offer', 'answer', 'candidate'):
             return
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {'type': 'video_offer', 'offer': offer, 'from_user': self.user.username},
-        )
-
-    async def handle_video_answer(self, data):
-        answer = data.get('answer')
-        if answer is None:
+        if payload is None:
             return
+        await self.send_to_user(to, {
+            'type': 'webrtc_signal',
+            'from_user': self.user.username,
+            'kind': kind,
+            'payload': payload,
+        })
+
+    async def handle_call_join(self, data):
+        # Announce to the room that we joined the video call. Members already in
+        # the call answer with `call_present` so we know whom to offer to.
         await self.channel_layer.group_send(
             self.room_group_name,
-            {'type': 'video_answer', 'answer': answer, 'from_user': self.user.username},
+            {'type': 'call_join', 'username': self.user.username},
         )
 
-    async def handle_ice_candidate(self, data):
-        candidate = data.get('candidate')
-        if candidate is None:
-            return
+    async def handle_call_leave(self, data):
         await self.channel_layer.group_send(
             self.room_group_name,
-            {'type': 'ice_candidate', 'candidate': candidate, 'from_user': self.user.username},
+            {'type': 'call_leave', 'username': self.user.username},
         )
 
-    async def handle_video_call_request(self, data):
-        # The notification text is generated here so a client cannot inject
-        # arbitrary content that other browsers would render.
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'video_call_request',
-                'message': f'{self.user.username} a pornit videochat-ul. Click pentru a te alătura!',
-                'from_user': self.user.username,
-            },
-        )
-
-    async def handle_video_call_end(self, data):
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {'type': 'video_call_end', 'from_user': self.user.username},
-        )
+    async def handle_call_present(self, data):
+        # Targeted reply to a joiner: "I'm already in the call".
+        to = data.get('to')
+        if isinstance(to, str):
+            await self.send_to_user(to, {'type': 'call_present', 'username': self.user.username})
 
     async def handle_typing(self, data):
         await self.channel_layer.group_send(
@@ -258,39 +262,39 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'is_typing': event['is_typing'],
         }))
 
-    async def video_offer(self, event):
-        if event['from_user'] != self.user.username:
+    async def webrtc_signal(self, event):
+        # Targeted (sent to the recipient's user group only).
+        await self.send(text_data=json.dumps({
+            'type': 'webrtc_signal',
+            'from_user': event['from_user'],
+            'kind': event['kind'],
+            'payload': event['payload'],
+        }))
+
+    async def call_join(self, event):
+        if event['username'] != self.user.username:
             await self.send(text_data=json.dumps({
-                'type': 'video_offer', 'offer': event['offer'], 'from_user': event['from_user'],
+                'type': 'call_join', 'username': event['username'],
             }))
 
-    async def video_answer(self, event):
-        if event['from_user'] != self.user.username:
+    async def call_leave(self, event):
+        if event['username'] != self.user.username:
             await self.send(text_data=json.dumps({
-                'type': 'video_answer', 'answer': event['answer'], 'from_user': event['from_user'],
+                'type': 'call_leave', 'username': event['username'],
             }))
 
-    async def ice_candidate(self, event):
-        if event['from_user'] != self.user.username:
-            await self.send(text_data=json.dumps({
-                'type': 'ice_candidate', 'candidate': event['candidate'], 'from_user': event['from_user'],
-            }))
-
-    async def video_call_request(self, event):
-        if event['from_user'] != self.user.username:
-            await self.send(text_data=json.dumps({
-                'type': 'video_call_request',
-                'message': event['message'],
-                'from_user': event['from_user'],
-            }))
-
-    async def video_call_end(self, event):
-        if event['from_user'] != self.user.username:
-            await self.send(text_data=json.dumps({
-                'type': 'video_call_end', 'from_user': event['from_user'],
-            }))
+    async def call_present(self, event):
+        # Targeted; the recipient is always a different user, no self-check.
+        await self.send(text_data=json.dumps({
+            'type': 'call_present', 'username': event['username'],
+        }))
 
     # -- helpers ------------------------------------------------------------
+    async def send_to_user(self, username, message):
+        await self.channel_layer.group_send(
+            _user_group(self.room_group_name, username), message,
+        )
+
     async def send_error(self, message):
         await self.send(text_data=json.dumps({'type': 'error', 'error': message}))
 
