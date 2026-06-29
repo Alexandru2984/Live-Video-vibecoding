@@ -54,9 +54,32 @@ Setate în producție prin systemd `EnvironmentFile=/etc/video.env`:
 | `DJANGO_LOG_LEVEL` | nu | Implicit `INFO` |
 | `ALLOW_REGISTRATION` | nu (implicit `True`) | Dezactivează signup-ul public cu `False` |
 | `REGISTRATION_RATE_LIMIT` | nu (implicit `5`) | Înregistrări reușite / IP / oră |
+| `STUN_URLS` | nu | CSV STUN (implicit Google STUN) |
+| `TURN_URLS` | nu | CSV TURN, ex: `turn:turn.example.com:3478,turns:turn.example.com:5349` |
+| `TURN_SHARED_SECRET` | nu | Secretul partajat coturn (`static-auth-secret`) |
+| `TURN_CREDENTIAL_TTL` | nu (implicit `86400`) | Durata de viață a credențialelor TURN efemere (sec) |
 
 > ⚠️ În producție, fără `DJANGO_SECRET_KEY` aplicația **refuză să pornească**
 > (intenționat — fail closed). Configurează `/etc/video.env` înainte de restart.
+
+## 📹 Video (mesh) și TURN
+
+Apelul video e **mesh N-la-N** (fiecare pereche are propriul `RTCPeerConnection`,
+negociere „perfect negotiation"). Pe majoritatea rețelelor STUN e suficient.
+
+Endpoint-ul `/ice-servers/` livrează lista ICE; pentru TURN dă **credențiale
+efemere HMAC** (mecanismul `static-auth-secret`/REST din coturn), deci nu se
+expune nicio parolă statică. Ca să activezi TURN mai târziu:
+
+1. Instalează `coturn`, setează în config-ul lui `use-auth-secret` +
+   `static-auth-secret=<S>` și un realm; restricționează relay-ul cu
+   `denied-peer-ip` pentru rețelele interne (10.x/192.168.x/169.254.x/127.x).
+2. Pune în `/etc/video.env`: `TURN_SHARED_SECRET=<S>` și
+   `TURN_URLS=turn:<host>:3478,turns:<host>:5349`.
+3. Repornește serviciul. Clientul preia automat noile servere ICE.
+
+> Notă: dacă domeniul e proxat prin Cloudflare, TURN nu poate trece prin proxy
+> (e trafic non-HTTP); folosește un hostname DNS-only spre IP-ul origine.
 
 ## 🛡️ Rotirea parolelor
 
