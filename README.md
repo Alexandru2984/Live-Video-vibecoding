@@ -90,6 +90,16 @@ python manage.py rotate_credentials --all --length 24
 ```
 Parolele generate sunt afișate o singură dată.
 
+## 🧪 Teste
+
+```bash
+DJANGO_SECRET_KEY=dev DJANGO_DEBUG=False python manage.py test
+```
+
+Suita (consumer WebSocket, view-uri, middleware CSP, comanda de rotire) rulează
+și în CI (GitHub Actions, `.github/workflows/ci.yml`) la fiecare push/PR, pe
+Python 3.12 și 3.13, fără a necesita Redis (channel layer in-memory la test).
+
 ## 🏗️ Structură
 
 ```
