@@ -671,6 +671,7 @@
             if (r.ok) {
                 const j = await r.json();
                 if (j.iceServers && j.iceServers.length) iceConfig = { iceServers: j.iceServers };
+                if (j.iceTransportPolicy) iceConfig.iceTransportPolicy = j.iceTransportPolicy;
             }
         } catch (e) { /* fall back to the default STUN config */ }
     }

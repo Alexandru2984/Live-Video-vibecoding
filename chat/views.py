@@ -196,6 +196,9 @@ def ice_servers(request):
             'username': username,
             'credential': base64.b64encode(digest).decode('ascii'),
         })
+        if settings.WEBRTC_FORCE_RELAY:
+            # Relay-only: peers never see each other's addresses.
+            return JsonResponse({'iceServers': servers, 'iceTransportPolicy': 'relay'})
     return JsonResponse({'iceServers': servers})
 
 

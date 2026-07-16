@@ -228,6 +228,11 @@ TURN_CREDENTIAL_TTL = int(os.environ.get('TURN_CREDENTIAL_TTL', '86400'))
 # so quality collapses quickly. Cap the call size (server-enforced).
 MAX_CALL_PARTICIPANTS = int(os.environ.get('MAX_CALL_PARTICIPANTS', '6'))
 
+# Privacy option: force all media through the TURN relay so call participants
+# never learn each other's IP addresses (P2P leaks them by design). Costs
+# bandwidth on the TURN server; only honoured when TURN is configured.
+WEBRTC_FORCE_RELAY = _env_bool('WEBRTC_FORCE_RELAY', False)
+
 # Allow public self-registration. Set ALLOW_REGISTRATION=False to lock it down.
 ALLOW_REGISTRATION = _env_bool('ALLOW_REGISTRATION', True)
 # Max successful registrations allowed per client IP per hour (abuse control).

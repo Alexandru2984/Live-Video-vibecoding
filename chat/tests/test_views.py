@@ -245,3 +245,19 @@ class IceServersViewTests(TestCase):
             hmac.new(b'top-secret', turn['username'].encode(), hashlib.sha1).digest()
         ).decode()
         self.assertEqual(turn['credential'], expected)
+
+    @override_settings(
+        TURN_URLS=['turn:turn.example.com:3478'],
+        TURN_SHARED_SECRET='top-secret',
+        WEBRTC_FORCE_RELAY=True,
+    )
+    def test_force_relay_advertised_with_turn(self):
+        self.client.force_login(self.user)
+        data = self.client.get('/ice-servers/').json()
+        self.assertEqual(data.get('iceTransportPolicy'), 'relay')
+
+    @override_settings(WEBRTC_FORCE_RELAY=True)
+    def test_force_relay_ignored_without_turn(self):
+        self.client.force_login(self.user)
+        data = self.client.get('/ice-servers/').json()
+        self.assertNotIn('iceTransportPolicy', data)

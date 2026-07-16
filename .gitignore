@@ -58,9 +58,9 @@ wheels/
 .pytest_cache/
 htmlcov/
 
-# Static files
+# Static files (collectstatic output only; app statics in chat/static ARE tracked)
 staticfiles/
-static/
+/static/
 
 # Node modules (dacă sunt folosite)
 node_modules/

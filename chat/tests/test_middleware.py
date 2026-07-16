@@ -26,3 +26,9 @@ class ContentSecurityPolicyTests(TestCase):
         a = re.search(r"'nonce-([\w-]+)'", self.client.get('/')['Content-Security-Policy']).group(1)
         b = re.search(r"'nonce-([\w-]+)'", self.client.get('/')['Content-Security-Policy']).group(1)
         self.assertNotEqual(a, b)
+
+    def test_no_third_party_hosts_and_pinned_connect_src(self):
+        csp = self.client.get('/')['Content-Security-Policy']
+        self.assertNotIn('jsdelivr', csp)
+        self.assertNotIn('https:', csp)  # no blanket https: exfiltration channel
+        self.assertIn('wss://testserver', csp)
