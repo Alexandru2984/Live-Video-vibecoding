@@ -57,6 +57,43 @@ class ChatConsumerTests(TransactionTestCase):
             self.assertEqual(code, 4404)
         async_to_sync(body)()
 
+    def test_rejected_connection_disconnects_cleanly(self):
+        # A rejected handshake (room missing) must not crash in disconnect()
+        # nor broadcast a spurious user_leave to the room.
+        async def body():
+            watcher, _, _ = await self._connect(self.john)
+            await drain(watcher)
+            comm, connected, _ = await self._connect(self.ana, room='nope')
+            self.assertFalse(connected)
+            await comm.disconnect()
+            msgs = await drain(watcher)
+            self.assertFalse(any(m.get('type') == 'user_leave' for m in msgs))
+            await watcher.disconnect()
+        async_to_sync(body)()
+
+    def test_join_leave_announced_once_per_user_not_per_tab(self):
+        async def body():
+            watcher, _, _ = await self._connect(self.john)
+            await drain(watcher)
+
+            tab1, _, _ = await self._connect(self.ana)
+            msgs = await drain(watcher)
+            self.assertEqual(sum(m.get('type') == 'user_join' for m in msgs), 1)
+
+            tab2, _, _ = await self._connect(self.ana)
+            msgs = await drain(watcher)
+            self.assertFalse(any(m.get('type') == 'user_join' for m in msgs))
+
+            await tab2.disconnect()
+            msgs = await drain(watcher)
+            self.assertFalse(any(m.get('type') == 'user_leave' for m in msgs))
+
+            await tab1.disconnect()
+            msgs = await drain(watcher)
+            self.assertEqual(sum(m.get('type') == 'user_leave' for m in msgs), 1)
+            await watcher.disconnect()
+        async_to_sync(body)()
+
     def test_authenticated_connect_gets_join_and_presence(self):
         async def body():
             comm, connected, _ = await self._connect(self.ana)

@@ -30,20 +30,25 @@ _room_members = defaultdict(Counter)
 
 
 def _presence_add(room, username):
+    """Register one connection; returns the user's connection count afterwards."""
     with _presence_lock:
         _room_members[room][username] += 1
+        return _room_members[room][username]
 
 
 def _presence_remove(room, username):
+    """Unregister one connection; returns the user's remaining connection count."""
     with _presence_lock:
         members = _room_members.get(room)
         if not members:
-            return
+            return 0
         members[username] -= 1
-        if members[username] <= 0:
+        remaining = members[username]
+        if remaining <= 0:
             del members[username]
         if not members:
             _room_members.pop(room, None)
+        return max(remaining, 0)
 
 
 def _presence_list(room):
@@ -74,6 +79,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         derived server-side, never trusted from the client payload.
     """
 
+    # Set only after the connection is fully accepted and registered; disconnect()
+    # runs for rejected handshakes too, and must not tear down what never existed.
+    joined = False
+
     async def connect(self):
         self.room_name = self.scope['url_route']['kwargs']['room_name']
         self.room_group_name = f'chat_{self.room_name}'
@@ -96,26 +105,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.channel_layer.group_add(self.user_group_name, self.channel_name)
         await self.accept()
+        self.joined = True
         logger.debug('User %s connected to room %s', self.user.username, self.room_name)
 
-        _presence_add(self.room_group_name, self.user.username)
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {'type': 'user_join', 'username': self.user.username},
-        )
+        # Announce the user only on their first connection (not per extra tab).
+        if _presence_add(self.room_group_name, self.user.username) == 1:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'user_join', 'username': self.user.username},
+            )
         await self.broadcast_presence()
 
     async def disconnect(self, close_code):
-        # group_add only ran for accepted (authenticated) connections.
-        if getattr(self, 'user', None) and self.user.is_authenticated:
-            _presence_remove(self.room_group_name, self.user.username)
+        if not self.joined:
+            return  # rejected handshake: nothing was registered
+        if _presence_remove(self.room_group_name, self.user.username) == 0:
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {'type': 'user_leave', 'username': self.user.username},
             )
-            await self.broadcast_presence()
-            await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
-            await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
+        await self.broadcast_presence()
+        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+        await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
 
     async def broadcast_presence(self):
         await self.channel_layer.group_send(
