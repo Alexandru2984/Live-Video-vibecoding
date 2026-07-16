@@ -6,3 +6,5 @@ channels-redis==4.3.0
 daphne==4.2.1
 redis==7.4.0
 asgiref==3.11.1
+# Optional error tracking: inert unless SENTRY_DSN is set (see settings.py).
+sentry-sdk==2.66.0

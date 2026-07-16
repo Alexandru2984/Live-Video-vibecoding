@@ -89,7 +89,7 @@ Setate în producție prin systemd `EnvironmentFile=/etc/video.env`:
 | `TURN_URLS` | nu | CSV TURN, ex: `turn:turn.example.com:3478,turns:turn.example.com:5349` |
 | `TURN_SHARED_SECRET` | nu | Secretul partajat coturn (`static-auth-secret`) |
 | `TURN_CREDENTIAL_TTL` | nu (implicit `86400`) | Durata de viață a credențialelor TURN efemere (sec) |
-| `SENTRY_DSN` | nu | Error tracking opțional (`pip install sentry-sdk`) |
+| `SENTRY_DSN` | nu | Error tracking opțional (inclus în requirements) |
 
 > ⚠️ În producție, fără `DJANGO_SECRET_KEY` aplicația **refuză să pornească**
 > (intenționat — fail closed). Configurează `/etc/video.env` înainte de restart.
