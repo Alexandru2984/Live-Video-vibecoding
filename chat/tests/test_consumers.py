@@ -144,6 +144,37 @@ class ChatConsumerTests(TransactionTestCase):
             await comm.disconnect()
         async_to_sync(body)()
 
+    def test_typing_flood_is_throttled(self):
+        async def body():
+            a, _, _ = await self._connect(self.ana)
+            b, _, _ = await self._connect(self.john)
+            await drain(a); await drain(b)
+            limit, _ = chat.consumers.RATE_LIMITS['typing']
+            for _ in range(limit + 15):
+                await a.send_json_to({'type': 'typing', 'is_typing': True})
+            b_msgs = await drain(b, timeout=0.5)
+            typing = [m for m in b_msgs if m.get('type') == 'typing']
+            self.assertLessEqual(len(typing), limit)
+            await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()
+
+    def test_signal_flood_is_throttled(self):
+        async def body():
+            a, _, _ = await self._connect(self.ana)
+            b, _, _ = await self._connect(self.john)
+            await drain(a); await drain(b)
+            limit, _ = chat.consumers.RATE_LIMITS['signal']
+            for _ in range(limit + 20):
+                await a.send_json_to({
+                    'type': 'webrtc_signal', 'to': 'john', 'kind': 'candidate',
+                    'payload': {'candidate': 'x'},
+                })
+            b_msgs = await drain(b, timeout=0.5)
+            signals = [m for m in b_msgs if m.get('type') == 'webrtc_signal']
+            self.assertLessEqual(len(signals), limit)
+            await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()
+
     def test_webrtc_signal_is_targeted(self):
         async def body():
             a, _, _ = await self._connect(self.ana)

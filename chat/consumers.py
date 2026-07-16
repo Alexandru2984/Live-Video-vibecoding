@@ -15,10 +15,21 @@ logger = logging.getLogger(__name__)
 
 # --- Limits / anti-abuse -----------------------------------------------------
 MAX_MESSAGE_LENGTH = 2000          # characters; longer messages are rejected
-RATE_LIMIT_COUNT = 10              # max messages...
+RATE_LIMIT_COUNT = 10              # max chat messages...
 RATE_LIMIT_WINDOW = 10.0          # ...per this many seconds, per connection
 # WebRTC signalling payloads can be large (SDP), but cap them to avoid abuse.
 MAX_SIGNAL_BYTES = 100_000
+
+# Per-connection limits for the other inbound message types, per 10s window.
+# Every inbound type must appear here: an unthrottled type that fans out via
+# group_send lets one client amplify traffic to the whole room.
+RATE_LIMITS = {
+    'chat': (RATE_LIMIT_COUNT, RATE_LIMIT_WINDOW),
+    'typing': (20, 10.0),
+    # SDP renegotiation + trickle ICE bursts across a mesh of peers.
+    'signal': (200, 10.0),
+    'call': (20, 10.0),
+}
 
 # --- Presence ---------------------------------------------------------------
 # Per-process roster: room_group_name -> Counter(username -> open tab count).
@@ -87,7 +98,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.room_name = self.scope['url_route']['kwargs']['room_name']
         self.room_group_name = f'chat_{self.room_name}'
         self.user = self.scope.get('user')
-        self._message_times = deque()
+        self._buckets = {}
 
         # 1) Authentication is mandatory.
         if not self.user or not self.user.is_authenticated:
@@ -204,6 +215,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
         if payload is None:
             return
+        if self.is_rate_limited('signal'):
+            return  # drop silently; errors here would only add traffic
         await self.send_to_user(to, {
             'type': 'webrtc_signal',
             'from_user': self.user.username,
@@ -214,12 +227,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def handle_call_join(self, data):
         # Announce to the room that we joined the video call. Members already in
         # the call answer with `call_present` so we know whom to offer to.
+        if self.is_rate_limited('call'):
+            return
         await self.channel_layer.group_send(
             self.room_group_name,
             {'type': 'call_join', 'username': self.user.username},
         )
 
     async def handle_call_leave(self, data):
+        if self.is_rate_limited('call'):
+            return
         await self.channel_layer.group_send(
             self.room_group_name,
             {'type': 'call_leave', 'username': self.user.username},
@@ -227,11 +244,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def handle_call_present(self, data):
         # Targeted reply to a joiner: "I'm already in the call".
+        if self.is_rate_limited('call'):
+            return
         to = data.get('to')
         if isinstance(to, str):
             await self.send_to_user(to, {'type': 'call_present', 'username': self.user.username})
 
     async def handle_typing(self, data):
+        if self.is_rate_limited('typing'):
+            return
         await self.channel_layer.group_send(
             self.room_group_name,
             {
@@ -309,14 +330,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def send_error(self, message):
         await self.send(text_data=json.dumps({'type': 'error', 'error': message}))
 
-    def is_rate_limited(self):
+    def is_rate_limited(self, bucket='chat'):
+        limit, window = RATE_LIMITS[bucket]
+        times = self._buckets.setdefault(bucket, deque())
         now = time.monotonic()
-        window_start = now - RATE_LIMIT_WINDOW
-        while self._message_times and self._message_times[0] < window_start:
-            self._message_times.popleft()
-        if len(self._message_times) >= RATE_LIMIT_COUNT:
+        window_start = now - window
+        while times and times[0] < window_start:
+            times.popleft()
+        if len(times) >= limit:
             return True
-        self._message_times.append(now)
+        times.append(now)
         return False
 
     @database_sync_to_async
