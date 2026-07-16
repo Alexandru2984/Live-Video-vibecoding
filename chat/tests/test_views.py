@@ -82,7 +82,7 @@ class RegistrationViewTests(TestCase):
         self.assertEqual(ok.status_code, 302)
         self.client.logout()
         # Same CF IP: blocked.
-        blocked = self.client.post('/register/', {
+        self.client.post('/register/', {
             'username': 'same_ip', 'password1': STRONG, 'password2': STRONG,
         }, HTTP_CF_CONNECTING_IP='198.51.100.1')
         self.assertFalse(User.objects.filter(username='same_ip').exists())
@@ -337,6 +337,20 @@ class AccountManagementTests(TestCase):
         self.assertFalse(User.objects.filter(username='selfsvc').exists())
         self.assertEqual(Message.objects.count(), 0)
         self.assertNotIn('_auth_user_id', self.client.session)
+
+
+class HealthzTests(TestCase):
+    def test_healthz_ok_without_auth(self):
+        resp = self.client.get('/healthz')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()['status'], 'ok')
+
+
+class ErrorPageTests(TestCase):
+    def test_custom_404_rendered(self):
+        resp = self.client.get('/no-such-page/')
+        self.assertEqual(resp.status_code, 404)
+        self.assertIn('Pagina nu există', resp.content.decode())
 
 
 class ServiceWorkerViewTests(TestCase):

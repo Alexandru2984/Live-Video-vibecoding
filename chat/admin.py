@@ -17,7 +17,7 @@ class MessageAdmin(admin.ModelAdmin):
     list_filter = ('room', 'timestamp', 'user')
     search_fields = ('content', 'user__username', 'room__name')
     readonly_fields = ('timestamp',)
-    
+
     def content_preview(self, obj):
         return obj.content[:50] + '...' if len(obj.content) > 50 else obj.content
     content_preview.short_description = 'Conținut'

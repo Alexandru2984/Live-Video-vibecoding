@@ -12,6 +12,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.staticfiles import finders
 from django.core import signing
 from django.core.cache import cache
+from django.db import connections
 from django.db.models import Q
 from django.http import Http404, HttpResponse, JsonResponse, HttpResponseForbidden
 from django.shortcuts import render, redirect, get_object_or_404
@@ -20,7 +21,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from .forms import RegistrationForm
-from .models import ChatRoom, Message
+from .models import ChatRoom
 
 # How many messages a history page returns.
 HISTORY_PAGE_SIZE = 30
@@ -179,7 +180,8 @@ def room_invite(request, room_name):
     """Owner-only: mint a signed invite link for a private room."""
     chat_room = get_object_or_404(ChatRoom, name=room_name)
     if chat_room.owner_id != request.user.id:
-        return JsonResponse({'success': False, 'error': 'Doar proprietarul poate invita.'}, status=403)
+        return JsonResponse(
+            {'success': False, 'error': 'Doar proprietarul poate invita.'}, status=403)
     token = signing.dumps(chat_room.name, salt=INVITE_SALT)
     link = request.build_absolute_uri(reverse('chat:room_join', args=[token]))
     return JsonResponse({'success': True, 'invite_url': link})
@@ -205,7 +207,8 @@ def room_delete(request, room_name):
     """Owner-only: delete the room (messages cascade) and evict live clients."""
     chat_room = get_object_or_404(ChatRoom, name=room_name)
     if chat_room.owner_id != request.user.id:
-        return JsonResponse({'success': False, 'error': 'Doar proprietarul poate șterge camera.'}, status=403)
+        return JsonResponse(
+            {'success': False, 'error': 'Doar proprietarul poate șterge camera.'}, status=403)
     # Tell connected clients first; their sockets survive until they navigate.
     async_to_sync(get_channel_layer().group_send)(
         f'chat_{chat_room.name}', {'type': 'room_deleted'},
@@ -243,6 +246,16 @@ def register(request):
         'form': form,
         'rate_error': rate_error,
     })
+
+
+def healthz(request):
+    """Liveness/readiness probe for uptime monitoring (no auth, no cache)."""
+    try:
+        with connections['default'].cursor() as cursor:
+            cursor.execute('SELECT 1')
+    except Exception:
+        return JsonResponse({'status': 'error'}, status=503)
+    return JsonResponse({'status': 'ok'})
 
 
 def service_worker(request):

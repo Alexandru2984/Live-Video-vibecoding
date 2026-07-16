@@ -1,6 +1,8 @@
-Django>=4.2,<7.0
-channels>=4.0.0
-channels-redis>=4.1.0
-daphne>=4.0.0
-redis>=4.5.0
-asgiref>=3.6.0
+# Pinned for reproducible deploys (versions running in production).
+# Upgrade deliberately: bump here, run the test suite, then deploy.
+Django==6.0.5
+channels==4.3.2
+channels-redis==4.3.0
+daphne==4.2.1
+redis==7.4.0
+asgiref==3.11.1

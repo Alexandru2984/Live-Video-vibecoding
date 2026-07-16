@@ -224,7 +224,8 @@ MESSAGE_TAGS = {_messages.ERROR: 'danger'}
 # peers are behind symmetric NATs/firewalls. TURN uses coturn's shared-secret
 # (REST) mechanism — the app hands out short-lived HMAC credentials.
 STUN_URLS = _env_list('STUN_URLS', 'stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302')
-TURN_URLS = _env_list('TURN_URLS', '')  # e.g. turn:video.micutu.com:3478,turns:video.micutu.com:5349
+# e.g. turn:video.micutu.com:3478,turns:video.micutu.com:5349
+TURN_URLS = _env_list('TURN_URLS', '')
 TURN_SHARED_SECRET = os.environ.get('TURN_SHARED_SECRET', '')
 TURN_CREDENTIAL_TTL = int(os.environ.get('TURN_CREDENTIAL_TTL', '86400'))
 
@@ -245,6 +246,16 @@ REGISTRATION_RATE_LIMIT = int(os.environ.get('REGISTRATION_RATE_LIMIT', '5'))
 LOGIN_RATE_LIMIT = int(os.environ.get('LOGIN_RATE_LIMIT', '10'))
 # Max rooms one user may create per hour.
 ROOM_CREATION_RATE_LIMIT = int(os.environ.get('ROOM_CREATION_RATE_LIMIT', '10'))
+
+# Error tracking (optional): set SENTRY_DSN and `pip install sentry-sdk`.
+# PII is never sent (send_default_pii=False) — errors only, no tracing.
+SENTRY_DSN = os.environ.get('SENTRY_DSN', '').strip()
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(dsn=SENTRY_DSN, send_default_pii=False, traces_sample_rate=0)
+    except ImportError:
+        pass  # DSN set but SDK not installed; run without error tracking
 
 # Cache: used for registration rate limiting. Shared (Redis) when available so
 # the limit holds across worker processes; per-process LocMem otherwise.

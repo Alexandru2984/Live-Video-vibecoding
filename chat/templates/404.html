@@ -1,0 +1,14 @@
+{% extends 'chat/base.html' %}
+
+{% block title %}Pagina nu există{% endblock %}
+
+{% block content %}
+<div class="text-center py-5">
+    <i class="bi bi-signpost-split fs-1 text-body-secondary d-block mb-3"></i>
+    <h1 class="h3">Pagina nu există</h1>
+    <p class="text-body-secondary">Linkul e greșit sau pagina a fost mutată.</p>
+    <a href="{% url 'chat:index' %}" class="btn btn-brand mt-2">
+        <i class="bi bi-house"></i> Înapoi la camere
+    </a>
+</div>
+{% endblock %}

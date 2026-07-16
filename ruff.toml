@@ -1,0 +1,11 @@
+line-length = 100
+target-version = "py312"
+extend-exclude = ["chat/migrations", "staticfiles"]
+
+[lint]
+# E/W: pycodestyle, F: pyflakes, B: bugbear (likely bugs).
+select = ["E", "F", "W", "B"]
+
+[lint.per-file-ignores]
+# Tests use a compact `await a(); await b()` idiom and long literal lines.
+"chat/tests/*" = ["E702", "E501"]

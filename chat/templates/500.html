@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+{# Standalone on purpose: the 500 handler renders without context processors,
+   so anything needing csp_nonce/request (like base.html's scripts) breaks. #}
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eroare de server · micutu</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif; margin: 0; min-height: 100vh;
+            display: grid; place-items: center; text-align: center;
+            background: #0e1018; color: #e7e9f3;
+        }
+        a { color: #8ea2ff; }
+    </style>
+</head>
+<body>
+    <div>
+        <h1>Ceva n-a mers bine</h1>
+        <p>Eroare temporară de server. <a href="/">Încearcă din nou</a>.</p>
+    </div>
+</body>
+</html>

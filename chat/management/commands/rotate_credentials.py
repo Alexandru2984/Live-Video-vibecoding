@@ -9,7 +9,6 @@ The generated passwords are shown a single time. Copy them to your password
 manager immediately — they are hashed in the database and cannot be recovered.
 """
 import secrets
-import string
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
@@ -75,7 +74,8 @@ class Command(BaseCommand):
             results.append((user.username, password))
 
         width = max(len(name) for name, _ in results)
-        self.stdout.write(self.style.SUCCESS('\nRotated passwords (shown once — store them now):\n'))
+        self.stdout.write(
+            self.style.SUCCESS('\nRotated passwords (shown once — store them now):\n'))
         for name, password in results:
             self.stdout.write(f'  {name.ljust(width)}  {password}')
         self.stdout.write(self.style.WARNING(

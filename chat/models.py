@@ -39,6 +39,6 @@ class Message(models.Model):
         indexes = [
             models.Index(fields=['room', '-id'], name='chat_msg_room_newest'),
         ]
-    
+
     def __str__(self):
         return f'{self.user.username}: {self.content[:50]}'
