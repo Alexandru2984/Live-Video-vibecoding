@@ -525,7 +525,15 @@
         socket.onerror = function () { try { socket.close(); } catch (e) {} };
     }
 
-    window.addEventListener('beforeunload', function () { stopped = true; if (socket) try { socket.close(); } catch (e) {} });
+    function shutdownSocket() { stopped = true; if (socket) try { socket.close(); } catch (e) {} }
+    window.addEventListener('beforeunload', shutdownSocket);
+    // Mobile browsers often skip beforeunload; pagehide is the reliable one.
+    window.addEventListener('pagehide', shutdownSocket);
+    // Restored from the back/forward cache: the socket was closed on the way
+    // out, so start a fresh connection (which also backfills history).
+    window.addEventListener('pageshow', function (e) {
+        if (e.persisted) { stopped = false; connect(); }
+    });
 
     function showError(msg) {
         const alert = document.createElement('div');
@@ -567,7 +575,11 @@
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         });
         messageInput.addEventListener('input', function () { sendTyping(true); });
-        messageInput.focus();
+        // Autofocus pops the keyboard and shoves the layout around on phones;
+        // only grab focus where a physical keyboard is the norm.
+        if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+            messageInput.focus();
+        }
     }
 
     // ---- emoji ------------------------------------------------------------

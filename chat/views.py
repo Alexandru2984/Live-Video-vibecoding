@@ -9,10 +9,11 @@ from django.conf import settings
 from django.contrib import messages as flash
 from django.contrib.auth import login, logout, views as auth_views
 from django.contrib.auth.decorators import login_required
+from django.contrib.staticfiles import finders
 from django.core import signing
 from django.core.cache import cache
 from django.db.models import Q
-from django.http import JsonResponse, HttpResponseForbidden
+from django.http import Http404, HttpResponse, JsonResponse, HttpResponseForbidden
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
@@ -242,6 +243,15 @@ def register(request):
         'form': form,
         'rate_error': rate_error,
     })
+
+
+def service_worker(request):
+    """Serve sw.js from the root path so its scope covers the whole site."""
+    path = finders.find('sw.js')
+    if not path:
+        raise Http404
+    with open(path, 'rb') as f:
+        return HttpResponse(f.read(), content_type='application/javascript')
 
 
 @login_required

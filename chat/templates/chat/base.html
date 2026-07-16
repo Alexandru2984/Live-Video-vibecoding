@@ -7,6 +7,9 @@
     <meta name="color-scheme" content="light dark">
     <meta name="theme-color" content="#5b6fe0">
     <title>{% block title %}Chat{% endblock %} · micutu</title>
+    <link rel="manifest" href="{% static 'manifest.webmanifest' %}">
+    <link rel="icon" type="image/png" href="{% static 'icon-192.png' %}">
+    <link rel="apple-touch-icon" href="{% static 'icon-192.png' %}">
 
     <!-- Set the theme before first paint to avoid a flash of the wrong colors. -->
     <script nonce="{{ csp_nonce }}">
@@ -47,9 +50,17 @@
         }
 
         body {
-            background: var(--app-bg) fixed;
             min-height: 100vh;
             min-height: 100dvh;
+        }
+        /* Fixed backdrop layer: background-attachment:fixed is broken on iOS
+           Safari, a position:fixed pseudo-element behaves everywhere. */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            background: var(--app-bg);
         }
 
         .navbar.app-nav {
@@ -173,6 +184,9 @@
                     try { localStorage.setItem('theme', next); } catch (e) {}
                     sync();
                 });
+            }
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('/sw.js').catch(function () {});
             }
         })();
     </script>

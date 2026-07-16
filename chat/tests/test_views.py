@@ -339,6 +339,14 @@ class AccountManagementTests(TestCase):
         self.assertNotIn('_auth_user_id', self.client.session)
 
 
+class ServiceWorkerViewTests(TestCase):
+    def test_served_at_root_scope_with_js_content_type(self):
+        resp = self.client.get('/sw.js')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp['Content-Type'], 'application/javascript')
+        self.assertIn(b'addEventListener', resp.content)
+
+
 class IceServersViewTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('caller', password=STRONG)
