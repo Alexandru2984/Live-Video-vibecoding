@@ -5,7 +5,7 @@ from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, override_settings
 
 import chat.consumers
 import chat.routing
@@ -29,10 +29,16 @@ async def drain(comm, timeout=0.3):
     return out
 
 
+def peer_of(msgs):
+    """Extract this connection's peer id from its drained welcome message."""
+    return next(m['peer_id'] for m in msgs if m.get('type') == 'welcome')
+
+
 class ChatConsumerTests(TransactionTestCase):
     def setUp(self):
-        # Presence is a module-level registry; isolate it between tests.
+        # Presence/call are module-level registries; isolate them between tests.
         chat.consumers._room_members.clear()
+        chat.consumers._call_members.clear()
         self.room = ChatRoom.objects.create(name='general', description='x')
         self.ana = User.objects.create_user('ana', password='pw')
         self.john = User.objects.create_user('john', password='pw')
@@ -162,32 +168,56 @@ class ChatConsumerTests(TransactionTestCase):
         async def body():
             a, _, _ = await self._connect(self.ana)
             b, _, _ = await self._connect(self.john)
-            await drain(a); await drain(b)
+            await drain(a)
+            b_peer = peer_of(await drain(b))
             limit, _ = chat.consumers.RATE_LIMITS['signal']
             for _ in range(limit + 20):
                 await a.send_json_to({
-                    'type': 'webrtc_signal', 'to': 'john', 'kind': 'candidate',
+                    'type': 'webrtc_signal', 'to': b_peer, 'kind': 'candidate',
                     'payload': {'candidate': 'x'},
                 })
             b_msgs = await drain(b, timeout=0.5)
             signals = [m for m in b_msgs if m.get('type') == 'webrtc_signal']
             self.assertLessEqual(len(signals), limit)
+            self.assertGreater(len(signals), 0)
             await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()
+
+    def test_welcome_carries_unique_peer_ids_per_connection(self):
+        async def body():
+            tab1, _, _ = await self._connect(self.ana)
+            tab2, _, _ = await self._connect(self.ana)
+            p1, p2 = peer_of(await drain(tab1)), peer_of(await drain(tab2))
+            self.assertNotEqual(p1, p2)
+
+            # Signalling to one tab's peer id must not reach the other tab.
+            b, _, _ = await self._connect(self.john)
+            await drain(b)
+            await b.send_json_to({
+                'type': 'webrtc_signal', 'to': p1, 'kind': 'offer',
+                'payload': {'type': 'offer', 'sdp': 'x'},
+            })
+            t1_msgs, t2_msgs = await drain(tab1), await drain(tab2)
+            self.assertTrue(any(m.get('type') == 'webrtc_signal' for m in t1_msgs))
+            self.assertFalse(any(m.get('type') == 'webrtc_signal' for m in t2_msgs))
+            await tab1.disconnect(); await tab2.disconnect(); await b.disconnect()
         async_to_sync(body)()
 
     def test_webrtc_signal_is_targeted(self):
         async def body():
             a, _, _ = await self._connect(self.ana)
             b, _, _ = await self._connect(self.john)
-            await drain(a); await drain(b)
+            a_peer = peer_of(await drain(a))
+            b_peer = peer_of(await drain(b))
             await a.send_json_to({
-                'type': 'webrtc_signal', 'to': 'john', 'kind': 'offer',
+                'type': 'webrtc_signal', 'to': b_peer, 'kind': 'offer',
                 'payload': {'type': 'offer', 'sdp': 'x'},
             })
             a_msgs, b_msgs = await drain(a), await drain(b)
             b_sig = [m for m in b_msgs if m.get('type') == 'webrtc_signal']
             self.assertEqual(len(b_sig), 1)
             self.assertEqual(b_sig[0]['from_user'], 'ana')
+            self.assertEqual(b_sig[0]['from_peer'], a_peer)
             self.assertEqual(b_sig[0]['kind'], 'offer')
             self.assertFalse(any(m.get('type') == 'webrtc_signal' for m in a_msgs))
             await a.disconnect(); await b.disconnect()
@@ -197,18 +227,83 @@ class ChatConsumerTests(TransactionTestCase):
         async def body():
             a, _, _ = await self._connect(self.ana)
             b, _, _ = await self._connect(self.john)
-            await drain(a); await drain(b)
+            a_peer = peer_of(await drain(a))
+            await drain(b)
 
             await a.send_json_to({'type': 'call_join'})
             a_msgs, b_msgs = await drain(a), await drain(b)
-            self.assertTrue(any(m.get('type') == 'call_join' and m.get('username') == 'ana' for m in b_msgs))
+            joins = [m for m in b_msgs if m.get('type') == 'call_join']
+            self.assertEqual(len(joins), 1)
+            self.assertEqual(joins[0]['username'], 'ana')
+            self.assertEqual(joins[0]['peer'], a_peer)
+            self.assertEqual(joins[0]['call_count'], 1)
+            # The joiner gets an ack, not the broadcast.
             self.assertFalse(any(m.get('type') == 'call_join' for m in a_msgs))
+            self.assertTrue(any(m.get('type') == 'call_joined' for m in a_msgs))
 
-            await b.send_json_to({'type': 'call_present', 'to': 'ana'})
+            # call_present must come from a call member, targeted at the joiner.
+            await b.send_json_to({'type': 'call_join'})
+            await drain(b)
+            await b.send_json_to({'type': 'call_present', 'to': a_peer})
             a_msgs, b_msgs = await drain(a), await drain(b)
             self.assertTrue(any(m.get('type') == 'call_present' and m.get('username') == 'john' for m in a_msgs))
             self.assertFalse(any(m.get('type') == 'call_present' for m in b_msgs))
             await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()
+
+    def test_call_present_requires_membership(self):
+        async def body():
+            a, _, _ = await self._connect(self.ana)
+            b, _, _ = await self._connect(self.john)
+            a_peer = peer_of(await drain(a))
+            await drain(b)
+            # john is NOT in the call; his call_present must be dropped.
+            await b.send_json_to({'type': 'call_present', 'to': a_peer})
+            a_msgs = await drain(a)
+            self.assertFalse(any(m.get('type') == 'call_present' for m in a_msgs))
+            await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()
+
+    def test_call_participant_cap(self):
+        async def body():
+            with override_settings(MAX_CALL_PARTICIPANTS=1):
+                a, _, _ = await self._connect(self.ana)
+                b, _, _ = await self._connect(self.john)
+                await drain(a); await drain(b)
+                await a.send_json_to({'type': 'call_join'})
+                await drain(a)
+                await b.send_json_to({'type': 'call_join'})
+                b_msgs = await drain(b)
+                self.assertTrue(any(m.get('type') == 'call_denied' for m in b_msgs))
+                self.assertFalse(any(m.get('type') == 'call_joined' for m in b_msgs))
+                # ana never learns about the denied join.
+                a_msgs = await drain(a)
+                self.assertFalse(any(m.get('type') == 'call_join' for m in a_msgs))
+
+                # Once ana leaves, john fits.
+                await a.send_json_to({'type': 'call_leave'})
+                await drain(a); await drain(b)
+                await b.send_json_to({'type': 'call_join'})
+                b_msgs = await drain(b)
+                self.assertTrue(any(m.get('type') == 'call_joined' for m in b_msgs))
+                await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()
+
+    def test_disconnect_while_in_call_broadcasts_leave(self):
+        async def body():
+            a, _, _ = await self._connect(self.ana)
+            b, _, _ = await self._connect(self.john)
+            a_peer = peer_of(await drain(a))
+            await drain(b)
+            await a.send_json_to({'type': 'call_join'})
+            await drain(a); await drain(b)
+            await a.disconnect()
+            b_msgs = await drain(b)
+            leaves = [m for m in b_msgs if m.get('type') == 'call_leave']
+            self.assertEqual(len(leaves), 1)
+            self.assertEqual(leaves[0]['peer'], a_peer)
+            self.assertEqual(leaves[0]['call_count'], 0)
+            await b.disconnect()
         async_to_sync(body)()
 
     def test_typing_relayed_to_others_not_self(self):

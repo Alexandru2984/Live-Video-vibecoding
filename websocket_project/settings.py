@@ -224,6 +224,10 @@ TURN_URLS = _env_list('TURN_URLS', '')  # e.g. turn:video.micutu.com:3478,turns:
 TURN_SHARED_SECRET = os.environ.get('TURN_SHARED_SECRET', '')
 TURN_CREDENTIAL_TTL = int(os.environ.get('TURN_CREDENTIAL_TTL', '86400'))
 
+# Mesh video: every participant uploads a stream to every other participant,
+# so quality collapses quickly. Cap the call size (server-enforced).
+MAX_CALL_PARTICIPANTS = int(os.environ.get('MAX_CALL_PARTICIPANTS', '6'))
+
 # Allow public self-registration. Set ALLOW_REGISTRATION=False to lock it down.
 ALLOW_REGISTRATION = _env_bool('ALLOW_REGISTRATION', True)
 # Max successful registrations allowed per client IP per hour (abuse control).

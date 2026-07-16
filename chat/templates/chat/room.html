@@ -335,8 +335,10 @@
             li.append(dot, name);
             userList.appendChild(li);
         });
-        // A peer that left the room can no longer be in the call — tear it down.
-        peers.forEach(function (st, user) { if (users.indexOf(user) === -1) closePeer(user); });
+        // A peer whose user left the room can no longer be in the call.
+        peers.forEach(function (st, peerId) {
+            if (users.indexOf(st.username) === -1) closePeer(peerId);
+        });
     }
 
     const typingUsers = new Map();
@@ -380,6 +382,10 @@
         socket.onmessage = function (e) {
             let data; try { data = JSON.parse(e.data); } catch (err) { return; }
             switch (data.type) {
+                case 'welcome':
+                    myPeerId = data.peer_id;
+                    setCallBadge(data.call_count);
+                    break;
                 case 'message': addMessage(data); break;
                 case 'user_join':
                 case 'user_leave': addMessage(data); break;
@@ -387,18 +393,31 @@
                 case 'typing': updateTyping(data); break;
                 case 'error': showError(data.error); break;
                 case 'webrtc_signal': handleSignal(data); break;
+                case 'call_joined': setCallBadge(data.call_count); break;
+                case 'call_denied':
+                    showError(data.error || 'Apelul este plin.');
+                    teardownCall();
+                    setCallBadge(data.call_count);
+                    break;
                 case 'call_join':
                     addMessage({ type: 'video_notification', username: 'Video', message: data.username + ' a intrat în videochat' });
-                    if (inCall && data.username !== userName) send({ type: 'call_present', to: data.username });
+                    setCallBadge(data.call_count);
+                    if (inCall) send({ type: 'call_present', to: data.peer });
                     break;
                 case 'call_present':
-                    if (inCall && data.username !== userName && !peers.has(data.username)) createPeer(data.username);
+                    if (inCall && !peers.has(data.peer)) createPeer(data.peer, data.username);
                     break;
-                case 'call_leave': closePeer(data.username); break;
+                case 'call_leave':
+                    closePeer(data.peer);
+                    setCallBadge(data.call_count);
+                    break;
                 default: break;
             }
         };
         socket.onclose = function (e) {
+            // Our peer id (and the server-side call membership) died with the
+            // socket; signalling for existing connections is gone. Start clean.
+            if (inCall) teardownCall();
             if (e.code === 4401) { setStatus('Neautentificat', 'text-bg-danger', 'bi-shield-lock'); return; }
             if (e.code === 4404) { setStatus('Camera nu există', 'text-bg-danger', 'bi-x-octagon'); return; }
             if (stopped) return;
@@ -529,7 +548,8 @@
     ]};
     let localStream = null;
     let inCall = false;
-    // remoteUser -> { pc, makingOffer, ignoreOffer, polite }
+    let myPeerId = null;   // per-connection id assigned by the server (welcome)
+    // remote peerId -> { pc, username, makingOffer, ignoreOffer, polite }
     const peers = new Map();
 
     async function loadIceConfig() {
@@ -544,45 +564,43 @@
 
     function signalTo(to, kind, payload) { send({ type: 'webrtc_signal', to: to, kind: kind, payload: payload }); }
 
-    function tileId(user) {
-        return 'tile-' + btoa(unescape(encodeURIComponent(user))).replace(/[^a-zA-Z0-9]/g, '');
-    }
+    // Peer ids are server-generated hex, safe to embed in element ids directly.
+    function tileId(peerId) { return 'tile-' + peerId; }
 
-    function ensureRemoteTile(user) {
-        let tile = document.getElementById(tileId(user));
+    function ensureRemoteTile(peerId, username) {
+        let tile = document.getElementById(tileId(peerId));
         if (tile) return tile.querySelector('video');
         tile = document.createElement('div');
         tile.className = 'video-tile';
-        tile.id = tileId(user);
+        tile.id = tileId(peerId);
         const v = document.createElement('video');
         v.autoplay = true; v.playsInline = true;
         const label = document.createElement('div');
         label.className = 'video-label';
         const span = document.createElement('span');
-        span.textContent = user;            // textContent -> XSS-safe
+        span.textContent = username;        // textContent -> XSS-safe
         label.appendChild(span);
         tile.append(v, label);
         videoGrid.appendChild(tile);
-        updateCallCount();
         return v;
     }
 
-    function removeRemoteTile(user) {
-        const tile = document.getElementById(tileId(user));
+    function removeRemoteTile(peerId) {
+        const tile = document.getElementById(tileId(peerId));
         if (tile) tile.remove();
-        updateCallCount();
     }
 
-    function updateCallCount() {
-        callCount.textContent = String(peers.size + (inCall ? 1 : 0));
+    // The badge shows the server-provided participant count when we have one.
+    function setCallBadge(count) {
+        if (typeof count === 'number') callCount.textContent = String(count);
     }
 
-    function createPeer(remote) {
+    function createPeer(remotePeerId, username) {
         // Deterministic politeness avoids a glare deadlock when both sides offer.
-        const polite = userName < remote;
+        const polite = myPeerId < remotePeerId;
         const pc = new RTCPeerConnection(iceConfig);
-        const state = { pc: pc, makingOffer: false, ignoreOffer: false, polite: polite };
-        peers.set(remote, state);
+        const state = { pc: pc, username: username, makingOffer: false, ignoreOffer: false, polite: polite };
+        peers.set(remotePeerId, state);
 
         if (localStream) localStream.getTracks().forEach(function (t) { pc.addTrack(t, localStream); });
 
@@ -590,28 +608,27 @@
             try {
                 state.makingOffer = true;
                 await pc.setLocalDescription();
-                signalTo(remote, 'offer', pc.localDescription);
+                signalTo(remotePeerId, 'offer', pc.localDescription);
             } catch (e) { console.error(e); } finally { state.makingOffer = false; }
         };
-        pc.onicecandidate = function (ev) { if (ev.candidate) signalTo(remote, 'candidate', ev.candidate); };
-        pc.ontrack = function (ev) { ensureRemoteTile(remote).srcObject = ev.streams[0]; };
+        pc.onicecandidate = function (ev) { if (ev.candidate) signalTo(remotePeerId, 'candidate', ev.candidate); };
+        pc.ontrack = function (ev) { ensureRemoteTile(remotePeerId, username).srcObject = ev.streams[0]; };
         pc.onconnectionstatechange = function () {
             if (pc.connectionState === 'failed') { try { pc.restartIce(); } catch (e) {} }
         };
-        updateCallCount();
         return state;
     }
 
-    function closePeer(remote) {
-        const st = peers.get(remote);
-        if (st) { try { st.pc.close(); } catch (e) {} peers.delete(remote); }
-        removeRemoteTile(remote);
+    function closePeer(remotePeerId) {
+        const st = peers.get(remotePeerId);
+        if (st) { try { st.pc.close(); } catch (e) {} peers.delete(remotePeerId); }
+        removeRemoteTile(remotePeerId);
     }
 
     async function handleSignal(data) {
         if (!inCall) return;                // ignore stray signals when not in a call
-        const remote = data.from_user;
-        const st = peers.get(remote) || createPeer(remote);
+        const remote = data.from_peer;
+        const st = peers.get(remote) || createPeer(remote, data.from_user);
         const pc = st.pc;
         try {
             if (data.kind === 'offer' || data.kind === 'answer') {
@@ -645,15 +662,20 @@
         send({ type: 'call_join' });
     }
 
-    function leaveCall() {
+    // Local teardown shared by voluntary leave and server-side denial.
+    function teardownCall() {
         inCall = false;
-        send({ type: 'call_leave' });
-        peers.forEach(function (st, user) { try { st.pc.close(); } catch (e) {} removeRemoteTile(user); });
+        peers.forEach(function (st, peerId) { try { st.pc.close(); } catch (e) {} removeRemoteTile(peerId); });
         peers.clear();
         if (localStream) { localStream.getTracks().forEach(function (t) { t.stop(); }); localStream = null; }
         localVideo.srcObject = null;
         localTile.hidden = true;
         updateCallUI();
+    }
+
+    function leaveCall() {
+        send({ type: 'call_leave' });
+        teardownCall();
     }
 
     function updateCallUI() {
@@ -668,7 +690,6 @@
             videoStatus.textContent = 'Neconectat'; videoStatus.className = 'badge text-bg-secondary';
             toggleAudioBtn.disabled = true; toggleVideoCameraBtn.disabled = true;
         }
-        updateCallCount();
     }
 
     if (toggleCallBtn) toggleCallBtn.addEventListener('click', function () {

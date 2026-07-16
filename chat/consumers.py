@@ -1,12 +1,14 @@
-import hashlib
 import json
 import logging
+import re
+import secrets
 import threading
 import time
 from collections import Counter, defaultdict, deque
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.conf import settings
 from django.utils import timezone
 
 from .models import ChatRoom, Message
@@ -67,14 +69,48 @@ def _presence_list(room):
         return sorted(_room_members.get(room, {}))
 
 
-def _user_group(room_group_name, username):
-    """Per-user channel group, used to deliver targeted WebRTC signalling.
+# --- Video call membership ---------------------------------------------------
+# Peers are identified by a per-connection id, not by username: the same
+# account may be open in several tabs/devices, and username-keyed signalling
+# would deliver offers to all of them at once. Same single-process caveat as
+# the presence roster above.
+PEER_ID_RE = re.compile(r'^[0-9a-f]{16}$')
+_call_members = defaultdict(set)
 
-    Usernames can contain characters that are invalid in channel group names,
-    so we hash them into a safe, fixed suffix.
-    """
-    digest = hashlib.sha1(username.encode('utf-8')).hexdigest()[:20]
-    return f'{room_group_name}.u.{digest}'
+
+def _peer_group(room_group_name, peer_id):
+    """Per-connection channel group for targeted WebRTC signalling."""
+    return f'{room_group_name}.p.{peer_id}'
+
+
+def _call_add(room, peer_id, cap):
+    """Try to join the call; returns (joined, participant_count)."""
+    with _presence_lock:
+        members = _call_members[room]
+        if peer_id in members:
+            return True, len(members)
+        if len(members) >= cap:
+            return False, len(members)
+        members.add(peer_id)
+        return True, len(members)
+
+
+def _call_remove(room, peer_id):
+    """Leave the call; returns (was_member, participant_count)."""
+    with _presence_lock:
+        members = _call_members.get(room)
+        if not members or peer_id not in members:
+            return False, len(members or ())
+        members.discard(peer_id)
+        if not members:
+            _call_members.pop(room, None)
+            return True, 0
+        return True, len(members)
+
+
+def _call_count(room):
+    with _presence_lock:
+        return len(_call_members.get(room, ()))
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
@@ -112,12 +148,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=4404)  # 4404 = not found (app-defined)
             return
 
-        self.user_group_name = _user_group(self.room_group_name, self.user.username)
+        self.peer_id = secrets.token_hex(8)
+        self.in_call = False
+        self.peer_group_name = _peer_group(self.room_group_name, self.peer_id)
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
-        await self.channel_layer.group_add(self.user_group_name, self.channel_name)
+        await self.channel_layer.group_add(self.peer_group_name, self.channel_name)
         await self.accept()
         self.joined = True
         logger.debug('User %s connected to room %s', self.user.username, self.room_name)
+
+        # Tell this connection who it is (peer id for signalling) and the
+        # current call size, before any broadcasts arrive.
+        await self.send(text_data=json.dumps({
+            'type': 'welcome',
+            'peer_id': self.peer_id,
+            'username': self.user.username,
+            'call_count': _call_count(self.room_group_name),
+        }))
 
         # Announce the user only on their first connection (not per extra tab).
         if _presence_add(self.room_group_name, self.user.username) == 1:
@@ -130,6 +177,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         if not self.joined:
             return  # rejected handshake: nothing was registered
+        if self.in_call:
+            _, count = _call_remove(self.room_group_name, self.peer_id)
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'call_leave', 'username': self.user.username,
+                 'peer': self.peer_id, 'call_count': count},
+            )
         if _presence_remove(self.room_group_name, self.user.username) == 0:
             await self.channel_layer.group_send(
                 self.room_group_name,
@@ -137,7 +191,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
         await self.broadcast_presence()
         await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
-        await self.channel_layer.group_discard(self.user_group_name, self.channel_name)
+        await self.channel_layer.group_discard(self.peer_group_name, self.channel_name)
 
     async def broadcast_presence(self):
         await self.channel_layer.group_send(
@@ -211,15 +265,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         to = data.get('to')
         kind = data.get('kind')
         payload = data.get('payload')
-        if not isinstance(to, str) or kind not in ('offer', 'answer', 'candidate'):
+        if not isinstance(to, str) or not PEER_ID_RE.match(to):
             return
-        if payload is None:
+        if kind not in ('offer', 'answer', 'candidate') or payload is None:
             return
         if self.is_rate_limited('signal'):
             return  # drop silently; errors here would only add traffic
-        await self.send_to_user(to, {
+        await self.send_to_peer(to, {
             'type': 'webrtc_signal',
             'from_user': self.user.username,
+            'from_peer': self.peer_id,
             'kind': kind,
             'payload': payload,
         })
@@ -227,28 +282,49 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def handle_call_join(self, data):
         # Announce to the room that we joined the video call. Members already in
         # the call answer with `call_present` so we know whom to offer to.
-        if self.is_rate_limited('call'):
+        if self.is_rate_limited('call') or self.in_call:
             return
+        joined, count = _call_add(
+            self.room_group_name, self.peer_id, settings.MAX_CALL_PARTICIPANTS,
+        )
+        if not joined:
+            await self.send(text_data=json.dumps({
+                'type': 'call_denied',
+                'error': f'Apelul este plin (maxim {settings.MAX_CALL_PARTICIPANTS} participanți).',
+                'call_count': count,
+            }))
+            return
+        self.in_call = True
+        # Ack directly to the joiner (the broadcast below skips its own peer).
+        await self.send(text_data=json.dumps({'type': 'call_joined', 'call_count': count}))
         await self.channel_layer.group_send(
             self.room_group_name,
-            {'type': 'call_join', 'username': self.user.username},
+            {'type': 'call_join', 'username': self.user.username,
+             'peer': self.peer_id, 'call_count': count},
         )
 
     async def handle_call_leave(self, data):
-        if self.is_rate_limited('call'):
+        if self.is_rate_limited('call') or not self.in_call:
             return
+        self.in_call = False
+        _, count = _call_remove(self.room_group_name, self.peer_id)
         await self.channel_layer.group_send(
             self.room_group_name,
-            {'type': 'call_leave', 'username': self.user.username},
+            {'type': 'call_leave', 'username': self.user.username,
+             'peer': self.peer_id, 'call_count': count},
         )
 
     async def handle_call_present(self, data):
         # Targeted reply to a joiner: "I'm already in the call".
-        if self.is_rate_limited('call'):
+        if self.is_rate_limited('call') or not self.in_call:
             return
         to = data.get('to')
-        if isinstance(to, str):
-            await self.send_to_user(to, {'type': 'call_present', 'username': self.user.username})
+        if isinstance(to, str) and PEER_ID_RE.match(to):
+            await self.send_to_peer(to, {
+                'type': 'call_present',
+                'username': self.user.username,
+                'peer': self.peer_id,
+            })
 
     async def handle_typing(self, data):
         if self.is_rate_limited('typing'):
@@ -295,36 +371,40 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }))
 
     async def webrtc_signal(self, event):
-        # Targeted (sent to the recipient's user group only).
+        # Targeted (sent to the recipient's peer group only).
         await self.send(text_data=json.dumps({
             'type': 'webrtc_signal',
             'from_user': event['from_user'],
+            'from_peer': event['from_peer'],
             'kind': event['kind'],
             'payload': event['payload'],
         }))
 
     async def call_join(self, event):
-        if event['username'] != self.user.username:
+        if event['peer'] != self.peer_id:
             await self.send(text_data=json.dumps({
                 'type': 'call_join', 'username': event['username'],
+                'peer': event['peer'], 'call_count': event['call_count'],
             }))
 
     async def call_leave(self, event):
-        if event['username'] != self.user.username:
+        if event['peer'] != self.peer_id:
             await self.send(text_data=json.dumps({
                 'type': 'call_leave', 'username': event['username'],
+                'peer': event['peer'], 'call_count': event['call_count'],
             }))
 
     async def call_present(self, event):
-        # Targeted; the recipient is always a different user, no self-check.
+        # Targeted; the recipient is always a different peer, no self-check.
         await self.send(text_data=json.dumps({
             'type': 'call_present', 'username': event['username'],
+            'peer': event['peer'],
         }))
 
     # -- helpers ------------------------------------------------------------
-    async def send_to_user(self, username, message):
+    async def send_to_peer(self, peer_id, message):
         await self.channel_layer.group_send(
-            _user_group(self.room_group_name, username), message,
+            _peer_group(self.room_group_name, peer_id), message,
         )
 
     async def send_error(self, message):
