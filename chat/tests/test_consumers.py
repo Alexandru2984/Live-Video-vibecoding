@@ -308,6 +308,42 @@ class ChatConsumerTests(TransactionTestCase):
             await b.disconnect()
         async_to_sync(body)()
 
+    def test_delete_own_message(self):
+        async def body():
+            a, _, _ = await self._connect(self.ana)
+            b, _, _ = await self._connect(self.john)
+            await drain(a); await drain(b)
+            await a.send_json_to({'message': 'oops'})
+            mid = next(m['id'] for m in await drain(a) if m.get('type') == 'message')
+            await drain(b)
+
+            await a.send_json_to({'type': 'delete_message', 'id': mid})
+            b_msgs = await drain(b)
+            self.assertTrue(any(
+                m.get('type') == 'message_deleted' and m.get('id') == mid for m in b_msgs
+            ))
+            count = await sync_to_async(Message.objects.filter(id=mid).count)()
+            self.assertEqual(count, 0)
+            await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()
+
+    def test_cannot_delete_someone_elses_message(self):
+        async def body():
+            a, _, _ = await self._connect(self.ana)
+            b, _, _ = await self._connect(self.john)
+            await drain(a); await drain(b)
+            await a.send_json_to({'message': 'mine'})
+            mid = next(m['id'] for m in await drain(a) if m.get('type') == 'message')
+            await drain(b)
+
+            await b.send_json_to({'type': 'delete_message', 'id': mid})
+            a_msgs = await drain(a)
+            self.assertFalse(any(m.get('type') == 'message_deleted' for m in a_msgs))
+            count = await sync_to_async(Message.objects.filter(id=mid).count)()
+            self.assertEqual(count, 1)
+            await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()
+
     def test_typing_relayed_to_others_not_self(self):
         async def body():
             a, _, _ = await self._connect(self.ana)

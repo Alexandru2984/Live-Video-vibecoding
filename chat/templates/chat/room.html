@@ -30,6 +30,14 @@
         content: ''; flex: 1; border-top: 1px solid var(--bs-border-color);
     }
 
+    .msg-del {
+        border: none; background: transparent; color: var(--bs-secondary-color);
+        padding: 0 .3rem; line-height: 1; border-radius: .3rem; visibility: hidden;
+    }
+    .msg-del:hover { color: var(--bs-danger); background: var(--bs-secondary-bg); }
+    .message:hover .msg-del, .message:focus-within .msg-del { visibility: visible; }
+    @media (hover: none) { .msg-del { visibility: visible; } }
+
     .emoji-panel {
         display: flex; flex-wrap: wrap; gap: .15rem;
         margin-top: .5rem; max-height: 150px; overflow: auto;
@@ -92,6 +100,10 @@
                                     <div class="d-flex align-items-center mb-1">
                                         <strong class="me-2">{{ message.user.username }}</strong>
                                         <small class="text-body-secondary">{{ message.timestamp|date:"H:i" }}</small>
+                                        {% if message.user_id == user.id %}
+                                            <button type="button" class="msg-del ms-1" title="Șterge mesajul"
+                                                    aria-label="Șterge mesajul">&times;</button>
+                                        {% endif %}
                                     </div>
                                     <div class="message-content">{{ message.content }}</div>
                                 </div>
@@ -317,6 +329,15 @@
         timeEl.textContent = data.iso ? formatTime(new Date(data.iso))
                                       : (data.timestamp || formatTime(new Date()));
         header.append(nameEl, timeEl);
+        const deletable = data.id != null && data.username === userName &&
+            (data.type === undefined || data.type === 'message');
+        if (deletable) {
+            const del = document.createElement('button');
+            del.type = 'button'; del.className = 'msg-del ms-1';
+            del.title = 'Șterge mesajul'; del.setAttribute('aria-label', 'Șterge mesajul');
+            del.innerHTML = '&times;';
+            header.appendChild(del);
+        }
 
         const content = document.createElement('div');
         content.className = 'message-content';
@@ -437,6 +458,7 @@
                     setCallBadge(data.call_count);
                     break;
                 case 'message': addMessage(data); break;
+                case 'message_deleted': removeMessage(data.id); break;
                 case 'user_join':
                 case 'user_leave': addMessage(data); break;
                 case 'presence': updatePresence(data); break;
@@ -607,6 +629,21 @@
     if (loadMoreBtn) loadMoreBtn.addEventListener('click', loadMore);
     chatLog.addEventListener('scroll', function () {
         if (chatLog.scrollTop < 40 && !loadMoreWrap.classList.contains('d-none')) loadMore();
+    });
+
+    // ---- deleting own messages --------------------------------------------
+    function removeMessage(id) {
+        if (id == null) return;
+        const node = chatLog.querySelector('.message[data-mid="' + id + '"]');
+        if (node) { node.remove(); renderDaySeparators(); }
+    }
+    chatLog.addEventListener('click', function (e) {
+        const btn = e.target.closest('.msg-del');
+        if (!btn) return;
+        const node = btn.closest('.message[data-mid]');
+        if (!node) return;
+        if (!window.confirm('Ștergi acest mesaj pentru toată lumea?')) return;
+        send({ type: 'delete_message', id: parseInt(node.dataset.mid, 10) });
     });
 
     // ---- WebRTC mesh (N peers, perfect negotiation per connection) --------

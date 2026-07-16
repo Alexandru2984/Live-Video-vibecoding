@@ -31,6 +31,7 @@ RATE_LIMITS = {
     # SDP renegotiation + trickle ICE bursts across a mesh of peers.
     'signal': (200, 10.0),
     'call': (20, 10.0),
+    'delete': (10, 10.0),
 }
 
 # --- Presence ---------------------------------------------------------------
@@ -230,6 +231,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'call_leave': self.handle_call_leave,
             'call_present': self.handle_call_present,
             'typing': self.handle_typing,
+            'delete_message': self.handle_delete_message,
         }
         handler = handlers.get(message_type)
         if handler is not None:
@@ -330,6 +332,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'peer': self.peer_id,
             })
 
+    async def handle_delete_message(self, data):
+        """Delete one of your own messages (hard delete) and tell the room."""
+        if self.is_rate_limited('delete'):
+            return
+        message_id = data.get('id')
+        if not isinstance(message_id, int) or message_id <= 0:
+            return
+        if await self.delete_own_message(message_id):
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'message_deleted', 'id': message_id},
+            )
+
     async def handle_typing(self, data):
         if self.is_rate_limited('typing'):
             return
@@ -365,6 +380,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'type': 'user_leave',
             'username': event['username'],
             'message': f"{event['username']} a părăsit conversația",
+        }))
+
+    async def message_deleted(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'message_deleted',
+            'id': event['id'],
         }))
 
     async def typing(self, event):
@@ -431,6 +452,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def room_exists(self):
         return ChatRoom.objects.filter(name=self.room_name).exists()
+
+    @database_sync_to_async
+    def delete_own_message(self, message_id):
+        # Ownership and room scoping enforced in the query itself.
+        deleted, _ = Message.objects.filter(
+            id=message_id, user=self.user, room__name=self.room_name,
+        ).delete()
+        return deleted > 0
 
     @database_sync_to_async
     def save_message(self, message):
