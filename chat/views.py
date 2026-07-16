@@ -3,14 +3,18 @@ import hashlib
 import hmac
 import time
 
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib import messages as flash
 from django.contrib.auth import login, logout, views as auth_views
 from django.contrib.auth.decorators import login_required
+from django.core import signing
 from django.core.cache import cache
+from django.db.models import Q
 from django.http import JsonResponse, HttpResponseForbidden
 from django.shortcuts import render, redirect, get_object_or_404
-from django.urls import reverse_lazy
+from django.urls import reverse, reverse_lazy
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
@@ -22,6 +26,10 @@ HISTORY_PAGE_SIZE = 30
 
 # Failed-login window (seconds) for the per-IP/per-username counters.
 LOGIN_RATE_WINDOW = 600
+
+# Signed invite links for private rooms.
+INVITE_SALT = 'chat.room-invite'
+INVITE_MAX_AGE = 7 * 24 * 3600  # seconds
 
 
 def _client_ip(request):
@@ -53,14 +61,23 @@ def _bump_rate(key, window):
 
 def index(request):
     """Pagina principală cu lista camerelor de chat"""
-    rooms = ChatRoom.objects.all().order_by('-created_at')
-    return render(request, 'chat/index.html', {'rooms': rooms})
+    rooms = ChatRoom.objects.all()
+    if request.user.is_authenticated:
+        rooms = rooms.filter(
+            Q(is_private=False) | Q(owner=request.user) | Q(members=request.user)
+        ).distinct()
+    else:
+        rooms = rooms.filter(is_private=False)
+    return render(request, 'chat/index.html', {'rooms': rooms.order_by('-created_at')})
 
 
 @login_required
 def room(request, room_name):
     """Pagina unei camere de chat specifice"""
     chat_room = get_object_or_404(ChatRoom, name=room_name)
+    if not chat_room.can_access(request.user):
+        flash.error(request, 'Camera este privată. Ai nevoie de o invitație.')
+        return redirect('chat:index')
     # Last page of messages, returned oldest-first for display.
     messages = list(
         chat_room.messages.select_related('user').order_by('-id')[:HISTORY_PAGE_SIZE]
@@ -83,6 +100,8 @@ def room_messages(request, room_name):
                   repeat with the newest received id while has_more is true).
     """
     chat_room = get_object_or_404(ChatRoom, name=room_name)
+    if not chat_room.can_access(request.user):
+        return JsonResponse({'error': 'forbidden'}, status=403)
     qs = chat_room.messages.select_related('user')
 
     after = request.GET.get('after')
@@ -136,14 +155,62 @@ def create_room(request):
             'error': 'Ai creat prea multe camere recent. Încearcă mai târziu.',
         })
 
-    _, created = ChatRoom.objects.get_or_create(
+    is_private = request.POST.get('is_private') in ('on', 'true', '1')
+    new_room, created = ChatRoom.objects.get_or_create(
         name=room_name,
-        defaults={'description': description[:1000]},
+        defaults={
+            'description': description[:1000],
+            'owner': request.user,
+            'is_private': is_private,
+        },
     )
     if created:
+        if is_private:
+            new_room.members.add(request.user)
         _bump_rate(rate_key, 3600)
         return JsonResponse({'success': True, 'room_name': room_name})
     return JsonResponse({'success': False, 'error': 'Camera există deja'})
+
+
+@login_required
+@require_http_methods(['POST'])
+def room_invite(request, room_name):
+    """Owner-only: mint a signed invite link for a private room."""
+    chat_room = get_object_or_404(ChatRoom, name=room_name)
+    if chat_room.owner_id != request.user.id:
+        return JsonResponse({'success': False, 'error': 'Doar proprietarul poate invita.'}, status=403)
+    token = signing.dumps(chat_room.name, salt=INVITE_SALT)
+    link = request.build_absolute_uri(reverse('chat:room_join', args=[token]))
+    return JsonResponse({'success': True, 'invite_url': link})
+
+
+@login_required
+def room_join(request, token):
+    """Redeem an invite link: become a member of the private room."""
+    try:
+        room_name = signing.loads(token, salt=INVITE_SALT, max_age=INVITE_MAX_AGE)
+    except signing.BadSignature:
+        flash.error(request, 'Linkul de invitație este invalid sau a expirat.')
+        return redirect('chat:index')
+    chat_room = get_object_or_404(ChatRoom, name=room_name)
+    chat_room.members.add(request.user)
+    flash.success(request, f'Ai fost adăugat în camera {chat_room.name}.')
+    return redirect('chat:room', room_name=chat_room.name)
+
+
+@login_required
+@require_http_methods(['POST'])
+def room_delete(request, room_name):
+    """Owner-only: delete the room (messages cascade) and evict live clients."""
+    chat_room = get_object_or_404(ChatRoom, name=room_name)
+    if chat_room.owner_id != request.user.id:
+        return JsonResponse({'success': False, 'error': 'Doar proprietarul poate șterge camera.'}, status=403)
+    # Tell connected clients first; their sockets survive until they navigate.
+    async_to_sync(get_channel_layer().group_send)(
+        f'chat_{chat_room.name}', {'type': 'room_deleted'},
+    )
+    chat_room.delete()
+    return JsonResponse({'success': True})
 
 
 def register(request):

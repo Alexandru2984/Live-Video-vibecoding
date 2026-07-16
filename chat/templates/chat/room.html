@@ -67,9 +67,27 @@
         <a href="{% url 'chat:index' %}" class="btn btn-sm btn-outline-secondary" title="Înapoi">
             <i class="bi bi-arrow-left"></i>
         </a>
-        <h1 class="h4 mb-0"><i class="bi bi-hash"></i>{{ room_name }}</h1>
+        <h1 class="h4 mb-0">
+            <i class="bi bi-hash"></i>{{ room_name }}
+            {% if chat_room.is_private %}<i class="bi bi-lock-fill text-warning fs-6" title="Cameră privată"></i>{% endif %}
+        </h1>
     </div>
-    <span class="badge text-bg-success" id="connectionStatus"><i class="bi bi-wifi"></i> Conectat</span>
+    <div class="d-flex align-items-center gap-2">
+        {% if chat_room.owner_id == user.id %}
+            <span id="ownerControls" class="d-flex gap-2">
+                {% csrf_token %}
+                {% if chat_room.is_private %}
+                <button id="inviteBtn" class="btn btn-sm btn-outline-primary" title="Copiază link de invitație">
+                    <i class="bi bi-link-45deg"></i> Invită
+                </button>
+                {% endif %}
+                <button id="deleteRoomBtn" class="btn btn-sm btn-outline-danger" title="Șterge camera">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </span>
+        {% endif %}
+        <span class="badge text-bg-success" id="connectionStatus"><i class="bi bi-wifi"></i> Conectat</span>
+    </div>
 </div>
 
 {% if chat_room.description %}
@@ -459,6 +477,11 @@
                     break;
                 case 'message': addMessage(data); break;
                 case 'message_deleted': removeMessage(data.id); break;
+                case 'room_deleted':
+                    stopped = true;
+                    showError('Camera a fost ștearsă de proprietar. Te redirecționăm…');
+                    setTimeout(function () { window.location.href = '/'; }, 2000);
+                    break;
                 case 'user_join':
                 case 'user_leave': addMessage(data); break;
                 case 'presence': updatePresence(data); break;
@@ -491,6 +514,7 @@
             // socket; signalling for existing connections is gone. Start clean.
             if (inCall) teardownCall();
             if (e.code === 4401) { setStatus('Neautentificat', 'text-bg-danger', 'bi-shield-lock'); return; }
+            if (e.code === 4403) { setStatus('Acces interzis', 'text-bg-danger', 'bi-lock'); return; }
             if (e.code === 4404) { setStatus('Camera nu există', 'text-bg-danger', 'bi-x-octagon'); return; }
             if (stopped) return;
             setStatus('Reconectare…', 'text-bg-warning', 'bi-arrow-repeat');
@@ -827,6 +851,42 @@
             toggleVideoCameraBtn.innerHTML = '<i class="bi ' + (t.enabled ? 'bi-camera-video' : 'bi-camera-video-off') + '"></i>';
         }
     });
+
+    // ---- owner controls (invite link / delete room) ------------------------
+    const ownerControls = document.getElementById('ownerControls');
+    if (ownerControls) {
+        const csrf = ownerControls.querySelector('input[name=csrfmiddlewaretoken]').value;
+        const inviteBtn = document.getElementById('inviteBtn');
+        const deleteRoomBtn = document.getElementById('deleteRoomBtn');
+
+        if (inviteBtn) inviteBtn.addEventListener('click', async function () {
+            try {
+                const r = await fetch("{% url 'chat:room_invite' room_name %}", {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                const j = await r.json();
+                if (!j.success) { showError(j.error || 'Nu am putut genera invitația.'); return; }
+                await navigator.clipboard.writeText(j.invite_url);
+                const original = inviteBtn.innerHTML;
+                inviteBtn.innerHTML = '<i class="bi bi-clipboard-check"></i> Copiat!';
+                setTimeout(function () { inviteBtn.innerHTML = original; }, 2000);
+            } catch (e) { showError('Nu am putut copia linkul.'); }
+        });
+
+        if (deleteRoomBtn) deleteRoomBtn.addEventListener('click', async function () {
+            if (!window.confirm('Ștergi camera și toate mesajele ei, pentru toată lumea?')) return;
+            try {
+                const r = await fetch("{% url 'chat:room_delete' room_name %}", {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                const j = await r.json();
+                if (j.success) { stopped = true; window.location.href = '/'; }
+                else showError(j.error || 'Nu am putut șterge camera.');
+            } catch (e) { showError('Nu am putut șterge camera.'); }
+        });
+    }
 
     // ---- go ---------------------------------------------------------------
     renderDaySeparators();

@@ -217,6 +217,82 @@ class CreateRoomViewTests(TestCase):
         self.assertFalse(ChatRoom.objects.filter(name='r3').exists())
 
 
+class PrivateRoomTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.owner = User.objects.create_user('owner', password=STRONG)
+        self.stranger = User.objects.create_user('stranger', password=STRONG)
+
+    def _create_private(self):
+        self.client.force_login(self.owner)
+        data = self.client.post('/create/', {
+            'room_name': 'secret', 'is_private': 'on',
+        }).json()
+        self.assertTrue(data['success'])
+        return ChatRoom.objects.get(name='secret')
+
+    def test_private_room_hidden_from_non_members(self):
+        self._create_private()
+        self.client.force_login(self.stranger)
+        resp = self.client.get('/')
+        self.assertNotContains(resp, 'secret')
+
+    def test_private_room_listed_for_owner_and_members(self):
+        room = self._create_private()
+        self.assertContains(self.client.get('/'), 'secret')
+        room.members.add(self.stranger)
+        self.client.force_login(self.stranger)
+        self.assertContains(self.client.get('/'), 'secret')
+
+    def test_private_room_page_redirects_non_members(self):
+        self._create_private()
+        self.client.force_login(self.stranger)
+        resp = self.client.get('/room/secret/')
+        self.assertRedirects(resp, '/')
+        self.assertEqual(
+            self.client.get('/room/secret/messages/').status_code, 403)
+
+    def test_public_room_remains_open(self):
+        self.client.force_login(self.owner)
+        self.client.post('/create/', {'room_name': 'agora'})
+        self.client.force_login(self.stranger)
+        self.assertEqual(self.client.get('/room/agora/').status_code, 200)
+
+    def test_invite_flow(self):
+        self._create_private()
+        invite = self.client.post('/room/secret/invite/').json()
+        self.assertTrue(invite['success'])
+
+        self.client.force_login(self.stranger)
+        resp = self.client.get(invite['invite_url'])
+        self.assertRedirects(resp, '/room/secret/')
+        self.assertTrue(
+            ChatRoom.objects.get(name='secret').members.filter(pk=self.stranger.pk).exists())
+
+    def test_invite_only_for_owner(self):
+        room = self._create_private()
+        room.members.add(self.stranger)
+        self.client.force_login(self.stranger)
+        self.assertEqual(self.client.post('/room/secret/invite/').status_code, 403)
+
+    def test_bad_invite_token_rejected(self):
+        self._create_private()
+        self.client.force_login(self.stranger)
+        resp = self.client.get('/join/forged-token/')
+        self.assertRedirects(resp, '/')
+        self.assertFalse(
+            ChatRoom.objects.get(name='secret').members.filter(pk=self.stranger.pk).exists())
+
+    def test_delete_room_owner_only(self):
+        self._create_private()
+        self.client.force_login(self.stranger)
+        self.assertEqual(self.client.post('/room/secret/delete/').status_code, 403)
+        self.client.force_login(self.owner)
+        data = self.client.post('/room/secret/delete/').json()
+        self.assertTrue(data['success'])
+        self.assertFalse(ChatRoom.objects.filter(name='secret').exists())
+
+
 class AccountManagementTests(TestCase):
     def setUp(self):
         cache.clear()

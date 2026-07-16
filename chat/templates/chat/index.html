@@ -20,6 +20,9 @@
                         <div class="card-body d-flex flex-column">
                             <h5 class="card-title text-truncate">
                                 <i class="bi bi-door-open text-primary"></i> {{ room.name }}
+                                {% if room.is_private %}
+                                    <i class="bi bi-lock-fill text-warning" title="Cameră privată"></i>
+                                {% endif %}
                             </h5>
                             {% if room.description %}
                                 <p class="card-text text-body-secondary small">{{ room.description }}</p>
@@ -64,6 +67,13 @@
                             <label for="description" class="form-label">Descriere <small class="text-body-secondary">(opțional)</small></label>
                             <textarea class="form-control" id="description" name="description" rows="2" maxlength="1000"></textarea>
                         </div>
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="is_private" name="is_private">
+                            <label class="form-check-label" for="is_private">
+                                <i class="bi bi-lock"></i> Cameră privată
+                                <small class="text-body-secondary d-block">Doar cei invitați de tine o pot accesa.</small>
+                            </label>
+                        </div>
                         <div class="d-grid">
                             <button type="submit" class="btn btn-success">
                                 <i class="bi bi-plus-lg"></i> Creează
@@ -91,7 +101,8 @@
                 <ul class="list-unstyled small mb-0">
                     <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Chat în timp real prin WebSockets</li>
                     <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Vezi cine e online și cine scrie</li>
-                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Apel video 1:1 (WebRTC)</li>
+                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Apel video de grup (WebRTC)</li>
+                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Camere private cu invitații</li>
                     <li><i class="bi bi-check2-circle text-success"></i> Mesajele se salvează automat</li>
                 </ul>
             </div>

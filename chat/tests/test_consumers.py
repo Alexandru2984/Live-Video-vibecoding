@@ -63,6 +63,21 @@ class ChatConsumerTests(TransactionTestCase):
             self.assertEqual(code, 4404)
         async_to_sync(body)()
 
+    def test_private_room_rejects_non_members(self):
+        async def body():
+            room = await sync_to_async(ChatRoom.objects.create)(
+                name='vault', is_private=True)
+            await sync_to_async(room.members.add)(self.ana)
+
+            comm, connected, code = await self._connect(self.john, room='vault')
+            self.assertFalse(connected)
+            self.assertEqual(code, 4403)
+
+            member, connected, _ = await self._connect(self.ana, room='vault')
+            self.assertTrue(connected)
+            await member.disconnect()
+        async_to_sync(body)()
+
     def test_rejected_connection_disconnects_cleanly(self):
         # A rejected handshake (room missing) must not crash in disconnect()
         # nor broadcast a spurious user_leave to the room.

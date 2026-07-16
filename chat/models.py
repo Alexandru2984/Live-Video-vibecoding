@@ -6,7 +6,22 @@ class ChatRoom(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    
+    # Rooms created before ownership existed have owner=None (nobody can
+    # delete them except via the admin, same as before).
+    owner = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name='owned_rooms',
+    )
+    is_private = models.BooleanField(default=False)
+    members = models.ManyToManyField(User, blank=True, related_name='joined_rooms')
+
+    def can_access(self, user):
+        """Private rooms are visible to their owner and invited members only."""
+        if not self.is_private:
+            return True
+        if not user.is_authenticated:
+            return False
+        return user.id == self.owner_id or self.members.filter(pk=user.pk).exists()
+
     def __str__(self):
         return self.name
 

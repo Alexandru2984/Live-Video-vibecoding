@@ -4,10 +4,11 @@ from .models import ChatRoom, Message
 
 @admin.register(ChatRoom)
 class ChatRoomAdmin(admin.ModelAdmin):
-    list_display = ('name', 'description', 'created_at')
-    list_filter = ('created_at',)
-    search_fields = ('name', 'description')
+    list_display = ('name', 'description', 'owner', 'is_private', 'created_at')
+    list_filter = ('is_private', 'created_at')
+    search_fields = ('name', 'description', 'owner__username')
     readonly_fields = ('created_at',)
+    filter_horizontal = ('members',)
 
 
 @admin.register(Message)

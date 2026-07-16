@@ -144,9 +144,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
 
         # 2) The room must exist; we do not auto-create rooms from a socket.
-        if not await self.room_exists():
+        #    Private rooms additionally require membership.
+        access = await self.room_access()
+        if access is None:
             logger.info('Rejected connection to missing room %s', self.room_name)
             await self.close(code=4404)  # 4404 = not found (app-defined)
+            return
+        if not access:
+            logger.info('Rejected %s from private room %s', self.user.username, self.room_name)
+            await self.close(code=4403)  # 4403 = forbidden (app-defined)
             return
 
         self.peer_id = secrets.token_hex(8)
@@ -388,6 +394,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'id': event['id'],
         }))
 
+    async def room_deleted(self, event):
+        # Sent by the owner's HTTP delete view; clients navigate away.
+        await self.send(text_data=json.dumps({'type': 'room_deleted'}))
+
     async def typing(self, event):
         if event['username'] == self.user.username:
             return  # don't echo my own typing state back to me
@@ -450,8 +460,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return False
 
     @database_sync_to_async
-    def room_exists(self):
-        return ChatRoom.objects.filter(name=self.room_name).exists()
+    def room_access(self):
+        """None: room missing. False: private, not a member. True: welcome."""
+        room = ChatRoom.objects.filter(name=self.room_name).first()
+        if room is None:
+            return None
+        return room.can_access(self.user)
 
     @database_sync_to_async
     def delete_own_message(self, message_id):
