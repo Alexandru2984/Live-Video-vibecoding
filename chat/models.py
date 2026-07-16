@@ -16,9 +16,14 @@ class Message(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     content = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
-    
+
     class Meta:
-        ordering = ['timestamp']
+        # Pagination is keyed on id (monotonic with auto_now_add timestamps,
+        # and unambiguous where same-moment timestamps would tie).
+        ordering = ['id']
+        indexes = [
+            models.Index(fields=['room', '-id'], name='chat_msg_room_newest'),
+        ]
     
     def __str__(self):
         return f'{self.user.username}: {self.content[:50]}'

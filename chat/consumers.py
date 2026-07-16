@@ -248,14 +248,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.send_error('Trimiți mesaje prea repede. Așteaptă o secundă.')
             return
 
-        await self.save_message(message)
+        saved = await self.save_message(message)
+        if saved is None:
+            return  # room vanished mid-session; nothing to broadcast
         await self.channel_layer.group_send(
             self.room_group_name,
             {
                 'type': 'chat_message',
+                'id': saved.id,
                 'message': message,
                 'username': self.user.username,
                 'timestamp': self.get_timestamp(),
+                'iso': timezone.localtime(saved.timestamp).isoformat(),
             },
         )
 
@@ -342,9 +346,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def chat_message(self, event):
         await self.send(text_data=json.dumps({
             'type': 'message',
+            'id': event['id'],
             'message': event['message'],
             'username': event['username'],
             'timestamp': event['timestamp'],
+            'iso': event['iso'],
         }))
 
     async def user_join(self, event):
@@ -431,8 +437,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         room = ChatRoom.objects.filter(name=self.room_name).first()
         if room is None:
             # Room was deleted between connect and now; drop silently.
-            return
-        Message.objects.create(room=room, user=self.user, content=message)
+            return None
+        return Message.objects.create(room=room, user=self.user, content=message)
 
     @staticmethod
     def get_timestamp():

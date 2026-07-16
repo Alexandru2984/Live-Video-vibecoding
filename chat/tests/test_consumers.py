@@ -120,6 +120,8 @@ class ChatConsumerTests(TransactionTestCase):
             self.assertEqual(len(chat_msgs), 1)
             self.assertEqual(chat_msgs[0]['message'], 'hello world')
             self.assertEqual(chat_msgs[0]['username'], 'ana')
+            self.assertIsInstance(chat_msgs[0]['id'], int)
+            self.assertIn('T', chat_msgs[0]['iso'])
             await comm.disconnect()
             count = await sync_to_async(Message.objects.filter(content='hello world').count)()
             self.assertEqual(count, 1)

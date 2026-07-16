@@ -62,7 +62,7 @@ def room(request, room_name):
     chat_room = get_object_or_404(ChatRoom, name=room_name)
     # Last page of messages, returned oldest-first for display.
     messages = list(
-        chat_room.messages.select_related('user').order_by('-timestamp')[:HISTORY_PAGE_SIZE]
+        chat_room.messages.select_related('user').order_by('-id')[:HISTORY_PAGE_SIZE]
     )
     messages.reverse()
 
@@ -75,23 +75,35 @@ def room(request, room_name):
 
 @login_required
 def room_messages(request, room_name):
-    """JSON history endpoint for infinite scroll: messages older than ?before=<id>."""
+    """JSON message history.
+
+    ?before=<id>: page of messages older than <id> (infinite scroll upwards).
+    ?after=<id>:  messages newer than <id>, oldest-first (reconnect catch-up;
+                  repeat with the newest received id while has_more is true).
+    """
     chat_room = get_object_or_404(ChatRoom, name=room_name)
-    qs = chat_room.messages.select_related('user').order_by('-timestamp')
+    qs = chat_room.messages.select_related('user')
 
+    after = request.GET.get('after')
     before = request.GET.get('before')
-    if before and before.isdigit():
-        qs = qs.filter(id__lt=int(before))
+    if after and after.isdigit():
+        page = list(qs.filter(id__gt=int(after)).order_by('id')[:HISTORY_PAGE_SIZE])
+        has_more = len(page) == HISTORY_PAGE_SIZE
+    else:
+        newest_first = qs.order_by('-id')
+        if before and before.isdigit():
+            newest_first = newest_first.filter(id__lt=int(before))
+        page = list(newest_first[:HISTORY_PAGE_SIZE])
+        has_more = len(page) == HISTORY_PAGE_SIZE
+        page.reverse()
 
-    page = list(qs[:HISTORY_PAGE_SIZE])
-    has_more = len(page) == HISTORY_PAGE_SIZE
-    page.reverse()
     data = [
         {
             'id': m.id,
             'username': m.user.username,
             'message': m.content,
             'timestamp': timezone.localtime(m.timestamp).strftime('%H:%M'),
+            'iso': timezone.localtime(m.timestamp).isoformat(),
         }
         for m in page
     ]

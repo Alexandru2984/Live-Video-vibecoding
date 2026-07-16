@@ -156,6 +156,26 @@ class RoomMessagesViewTests(TestCase):
         self.assertFalse(older['has_more'])
         self.assertTrue(all(m['id'] < oldest for m in older['messages']))
 
+    def test_catchup_after(self):
+        self.client.force_login(self.user)
+        pivot = self.msgs[2].id  # 32 newer messages exist past this one
+        page = self.client.get(f'/room/general/messages/?after={pivot}').json()
+        self.assertEqual(len(page['messages']), 30)
+        self.assertTrue(page['has_more'])
+        ids = [m['id'] for m in page['messages']]
+        self.assertEqual(ids, sorted(ids))  # oldest-first
+        self.assertTrue(all(i > pivot for i in ids))
+
+        rest = self.client.get(f'/room/general/messages/?after={ids[-1]}').json()
+        self.assertEqual(len(rest['messages']), 2)
+        self.assertFalse(rest['has_more'])
+
+    def test_messages_include_iso_timestamp(self):
+        self.client.force_login(self.user)
+        data = self.client.get('/room/general/messages/').json()
+        self.assertIn('iso', data['messages'][0])
+        self.assertIn('T', data['messages'][0]['iso'])
+
 
 class CreateRoomViewTests(TestCase):
     def setUp(self):

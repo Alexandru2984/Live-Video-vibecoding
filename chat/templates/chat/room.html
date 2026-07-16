@@ -21,6 +21,15 @@
 
     .typing-indicator { min-height: 1.4rem; font-style: italic; }
 
+    .day-sep {
+        display: flex; align-items: center; gap: .75rem;
+        margin: 1rem 0; color: var(--bs-secondary-color);
+        font-size: .78rem; text-transform: uppercase; letter-spacing: .4px;
+    }
+    .day-sep::before, .day-sep::after {
+        content: ''; flex: 1; border-top: 1px solid var(--bs-border-color);
+    }
+
     .emoji-panel {
         display: flex; flex-wrap: wrap; gap: .15rem;
         margin-top: .5rem; max-height: 150px; overflow: auto;
@@ -74,7 +83,7 @@
                 </div>
                 <div id="chat-log" class="chat-log">
                     {% for message in messages %}
-                        <div class="message" data-mid="{{ message.id }}">
+                        <div class="message" data-mid="{{ message.id }}" data-date="{{ message.timestamp|date:'Y-m-d' }}">
                             <div class="d-flex align-items-start">
                                 <div class="avatar me-2">
                                     <i class="bi bi-person-circle text-primary" style="font-size: 1.5rem;"></i>
@@ -232,6 +241,37 @@
     function formatTime(d) {
         return d.toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
     }
+    function localDateStr(d) {
+        return d.getFullYear() + '-' +
+            String(d.getMonth() + 1).padStart(2, '0') + '-' +
+            String(d.getDate()).padStart(2, '0');
+    }
+    function dayLabel(dateStr) {
+        const today = new Date();
+        if (dateStr === localDateStr(today)) return 'Astăzi';
+        const yesterday = new Date(today.getTime() - 86400000);
+        if (dateStr === localDateStr(yesterday)) return 'Ieri';
+        return new Date(dateStr + 'T00:00:00').toLocaleDateString('ro-RO', {
+            day: 'numeric', month: 'long', year: 'numeric',
+        });
+    }
+    // Recompute the "day changed" separators between consecutive messages.
+    // Idempotent: cheap enough for our page sizes, and safe to call after
+    // any batch mutation (append, prepend, catch-up, deletion).
+    function renderDaySeparators() {
+        chatLog.querySelectorAll('.day-sep').forEach(function (n) { n.remove(); });
+        let prevDate = null;
+        chatLog.querySelectorAll('.message[data-date]').forEach(function (node) {
+            const d = node.dataset.date;
+            if (d !== prevDate) {
+                const sep = document.createElement('div');
+                sep.className = 'day-sep';
+                sep.textContent = dayLabel(d);
+                node.before(sep);
+                prevDate = d;
+            }
+        });
+    }
     function setStatus(text, cls, icon) {
         connectionStatus.className = 'badge ' + cls;
         connectionStatus.innerHTML = '';
@@ -245,6 +285,7 @@
         const el = document.createElement('div');
         el.className = 'message';
         if (data.id != null) el.dataset.mid = data.id;
+        el.dataset.date = data.iso ? data.iso.slice(0, 10) : localDateStr(new Date());
 
         let messageClass = '';
         let icon = 'bi-person-circle text-primary';
@@ -273,7 +314,8 @@
         nameEl.textContent = data.username || '';
         const timeEl = document.createElement('small');
         timeEl.className = 'text-body-secondary';
-        timeEl.textContent = data.timestamp || formatTime(new Date());
+        timeEl.textContent = data.iso ? formatTime(new Date(data.iso))
+                                      : (data.timestamp || formatTime(new Date()));
         header.append(nameEl, timeEl);
 
         const content = document.createElement('div');
@@ -288,8 +330,13 @@
 
     function addMessage(data, opts) {
         opts = opts || {};
+        if (data.id != null) {
+            if (document.querySelector('.message[data-mid="' + data.id + '"]')) return;
+            if (data.id > latestId) latestId = data.id;
+        }
         const node = buildMessageNode(data);
         chatLog.appendChild(node);
+        renderDaySeparators();
         if (!opts.silent) autoScroll();
         if (!opts.silent && data.username !== userName && data.type !== 'user_join' && data.type !== 'user_leave') {
             playBeep();
@@ -366,6 +413,7 @@
     let socket = null;
     let reconnectDelay = 1000;
     let stopped = false;
+    let hadConnection = false;
 
     function send(obj) {
         if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(obj));
@@ -378,6 +426,8 @@
         socket.onopen = function () {
             reconnectDelay = 1000;
             setStatus('Conectat', 'text-bg-success', 'bi-wifi');
+            if (hadConnection) catchUpHistory();  // backfill the offline gap
+            hadConnection = true;
         };
         socket.onmessage = function (e) {
             let data; try { data = JSON.parse(e.data); } catch (err) { return; }
@@ -489,16 +539,41 @@
         emojiBtn.addEventListener('click', function () { emojiPanel.classList.toggle('d-none'); });
     }
 
-    // ---- history / load more ---------------------------------------------
+    // ---- history / load more / reconnect catch-up -------------------------
     let oldestId = null;
-    (function initOldest() {
+    let latestId = 0;
+    (function initIdRange() {
         const nodes = chatLog.querySelectorAll('.message[data-mid]');
         nodes.forEach(function (n) {
             const id = parseInt(n.dataset.mid, 10);
-            if (!isNaN(id) && (oldestId === null || id < oldestId)) oldestId = id;
+            if (isNaN(id)) return;
+            if (oldestId === null || id < oldestId) oldestId = id;
+            if (id > latestId) latestId = id;
         });
         if (nodes.length >= 30) loadMoreWrap.classList.remove('d-none');
     })();
+
+    // After a reconnect, fill in whatever was said while we were offline.
+    let catchingUp = false;
+    async function catchUpHistory() {
+        if (catchingUp || !latestId) return;
+        catchingUp = true;
+        try {
+            for (let page = 0; page < 5; page++) {
+                const res = await fetch(messagesUrl + '?after=' + latestId, {
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                if (!res.ok) break;
+                const data = await res.json();
+                (data.messages || []).forEach(function (m) { addMessage(m, { silent: true }); });
+                if (!data.has_more) break;
+            }
+            autoScroll();
+        } catch (e) {
+        } finally {
+            catchingUp = false;
+        }
+    }
 
     let loadingHistory = false;
     function prependHistory(messages) {
@@ -506,6 +581,7 @@
         const frag = document.createDocumentFragment();
         messages.forEach(function (m) { frag.appendChild(buildMessageNode(m)); });
         chatLog.insertBefore(frag, firstChild);
+        renderDaySeparators();
     }
     async function loadMore() {
         if (loadingHistory || oldestId === null) return;
@@ -715,6 +791,7 @@
     });
 
     // ---- go ---------------------------------------------------------------
+    renderDaySeparators();
     autoScroll();
     connect();
 })();
