@@ -206,6 +206,7 @@
                     <span>
                         <button id="toggleAudio" class="btn btn-sm btn-light" title="Microfon"><i class="bi bi-mic"></i></button>
                         <button id="toggleVideoCamera" class="btn btn-sm btn-light" title="Cameră"><i class="bi bi-camera-video"></i></button>
+                        <button id="toggleScreen" class="btn btn-sm btn-light" title="Partajează ecranul"><i class="bi bi-display"></i></button>
                     </span>
                 </div>
             </div>
@@ -677,6 +678,7 @@
     const toggleCallBtn = document.getElementById('toggleCall');
     const toggleAudioBtn = document.getElementById('toggleAudio');
     const toggleVideoCameraBtn = document.getElementById('toggleVideoCamera');
+    const toggleScreenBtn = document.getElementById('toggleScreen');
     const videoStatus = document.getElementById('videoStatus');
     const callCount = document.getElementById('callCount');
 
@@ -686,6 +688,8 @@
     let localStream = null;
     let inCall = false;
     let myPeerId = null;   // per-connection id assigned by the server (welcome)
+    let screenTrack = null;  // active screen-share video track, if any
+    let wakeLock = null;     // keeps the phone screen on during a call
     // remote peerId -> { pc, username, makingOffer, ignoreOffer, polite }
     const peers = new Map();
 
@@ -740,7 +744,11 @@
         const state = { pc: pc, username: username, makingOffer: false, ignoreOffer: false, polite: polite };
         peers.set(remotePeerId, state);
 
-        if (localStream) localStream.getTracks().forEach(function (t) { pc.addTrack(t, localStream); });
+        if (localStream) localStream.getTracks().forEach(function (t) {
+            // If we are mid screen-share, new peers get the screen, not the camera.
+            const track = (t.kind === 'video' && screenTrack) ? screenTrack : t;
+            pc.addTrack(track, localStream);
+        });
 
         pc.onnegotiationneeded = async function () {
             try {
@@ -796,6 +804,7 @@
         localTile.hidden = false;
         inCall = true;
         updateCallUI();
+        requestWakeLock();
         // Existing call members reply with `call_present`; then we offer to them.
         send({ type: 'call_join' });
     }
@@ -805,11 +814,67 @@
         inCall = false;
         peers.forEach(function (st, peerId) { try { st.pc.close(); } catch (e) {} removeRemoteTile(peerId); });
         peers.clear();
+        if (screenTrack) { try { screenTrack.stop(); } catch (e) {} screenTrack = null; updateScreenUI(); }
         if (localStream) { localStream.getTracks().forEach(function (t) { t.stop(); }); localStream = null; }
         localVideo.srcObject = null;
         localTile.hidden = true;
+        releaseWakeLock();
         updateCallUI();
     }
+
+    // ---- screen sharing ----------------------------------------------------
+    function replaceOutgoingVideo(track) {
+        peers.forEach(function (st) {
+            const sender = st.pc.getSenders().find(function (s) {
+                return s.track && s.track.kind === 'video';
+            });
+            if (sender) sender.replaceTrack(track).catch(function () {});
+        });
+    }
+
+    function updateScreenUI() {
+        if (!toggleScreenBtn) return;
+        toggleScreenBtn.className = 'btn btn-sm ' + (screenTrack ? 'btn-danger' : 'btn-light');
+        toggleScreenBtn.title = screenTrack ? 'Oprește partajarea' : 'Partajează ecranul';
+        // The camera preview is mirrored; a shared screen must not be.
+        localVideo.style.transform = screenTrack ? 'none' : '';
+    }
+
+    async function startScreenShare() {
+        if (!inCall || !localStream || screenTrack) return;
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        } catch (e) { return; }  // user dismissed the picker
+        screenTrack = stream.getVideoTracks()[0];
+        screenTrack.addEventListener('ended', stopScreenShare); // browser "Stop sharing" bar
+        replaceOutgoingVideo(screenTrack);
+        localVideo.srcObject = stream;
+        updateScreenUI();
+    }
+
+    function stopScreenShare() {
+        if (!screenTrack) return;
+        try { screenTrack.stop(); } catch (e) {}
+        screenTrack = null;
+        const camera = localStream && localStream.getVideoTracks()[0];
+        if (camera) replaceOutgoingVideo(camera);
+        localVideo.srcObject = localStream;
+        updateScreenUI();
+    }
+
+    // ---- wake lock (keep the screen on while in a call) --------------------
+    async function requestWakeLock() {
+        if (!('wakeLock' in navigator)) return;
+        try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+    }
+    function releaseWakeLock() {
+        if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+    }
+    document.addEventListener('visibilitychange', function () {
+        // The lock is auto-released when the tab is hidden; re-arm on return.
+        if (!document.hidden && inCall && !wakeLock) requestWakeLock();
+    });
 
     function leaveCall() {
         send({ type: 'call_leave' });
@@ -851,6 +916,15 @@
             toggleVideoCameraBtn.innerHTML = '<i class="bi ' + (t.enabled ? 'bi-camera-video' : 'bi-camera-video-off') + '"></i>';
         }
     });
+    if (toggleScreenBtn) {
+        // Screen capture is unavailable on most mobile browsers; hide the button.
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+            toggleScreenBtn.hidden = true;
+        }
+        toggleScreenBtn.addEventListener('click', function () {
+            if (screenTrack) stopScreenShare(); else startScreenShare();
+        });
+    }
 
     // ---- owner controls (invite link / delete room) ------------------------
     const ownerControls = document.getElementById('ownerControls');
