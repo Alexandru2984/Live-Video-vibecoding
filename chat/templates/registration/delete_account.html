@@ -1,0 +1,42 @@
+{% extends 'chat/base.html' %}
+
+{% block title %}Șterge contul{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card border-danger">
+            <div class="card-header text-center">
+                <h4 class="mb-0 text-danger"><i class="bi bi-exclamation-triangle"></i> Șterge contul</h4>
+            </div>
+            <div class="card-body">
+                <p>
+                    Contul <strong>{{ user.username }}</strong> și <strong>toate mesajele tale</strong>
+                    vor fi șterse definitiv. Această acțiune nu poate fi anulată.
+                </p>
+
+                {% if error %}
+                    <div class="alert alert-danger py-2">{{ error }}</div>
+                {% endif %}
+
+                <form method="post">
+                    {% csrf_token %}
+                    <div class="mb-3">
+                        <label for="confirm-password" class="form-label">
+                            <i class="bi bi-lock"></i> Confirmă cu parola ta
+                        </label>
+                        <input type="password" class="form-control" name="password"
+                               id="confirm-password" autocomplete="current-password" required>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-danger">
+                            <i class="bi bi-trash"></i> Șterge definitiv contul
+                        </button>
+                        <a href="{% url 'chat:index' %}" class="btn btn-outline-secondary">Renunță</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

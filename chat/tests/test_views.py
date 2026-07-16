@@ -217,6 +217,52 @@ class CreateRoomViewTests(TestCase):
         self.assertFalse(ChatRoom.objects.filter(name='r3').exists())
 
 
+class AccountManagementTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user('selfsvc', password=STRONG)
+
+    def test_password_change_requires_login(self):
+        self.assertEqual(self.client.get('/account/password/').status_code, 302)
+
+    def test_password_change_flow(self):
+        self.client.force_login(self.user)
+        new = STRONG + 'nou1!'
+        resp = self.client.post('/account/password/', {
+            'old_password': STRONG, 'new_password1': new, 'new_password2': new,
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(new))
+        # Session survives the change (auth hash updated by the view).
+        self.assertIn('_auth_user_id', self.client.session)
+
+    def test_password_change_rejects_wrong_old_password(self):
+        self.client.force_login(self.user)
+        resp = self.client.post('/account/password/', {
+            'old_password': 'wrong', 'new_password1': STRONG, 'new_password2': STRONG,
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(STRONG))
+
+    def test_delete_account_requires_correct_password(self):
+        self.client.force_login(self.user)
+        resp = self.client.post('/account/delete/', {'password': 'wrong'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(User.objects.filter(username='selfsvc').exists())
+
+    def test_delete_account_removes_user_and_messages(self):
+        room = ChatRoom.objects.create(name='general')
+        Message.objects.create(room=room, user=self.user, content='bye')
+        self.client.force_login(self.user)
+        resp = self.client.post('/account/delete/', {'password': STRONG})
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(User.objects.filter(username='selfsvc').exists())
+        self.assertEqual(Message.objects.count(), 0)
+        self.assertNotIn('_auth_user_id', self.client.session)
+
+
 class IceServersViewTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('caller', password=STRONG)

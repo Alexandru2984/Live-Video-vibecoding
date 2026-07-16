@@ -216,6 +216,10 @@ LOGIN_URL = '/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/'
 
+# Flash messages rendered with Bootstrap alert classes.
+from django.contrib.messages import constants as _messages  # noqa: E402
+MESSAGE_TAGS = {_messages.ERROR: 'danger'}
+
 # WebRTC ICE servers. STUN is enough on most networks; TURN relays media when
 # peers are behind symmetric NATs/firewalls. TURN uses coturn's shared-secret
 # (REST) mechanism — the app hands out short-lived HMAC credentials.

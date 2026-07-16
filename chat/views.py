@@ -4,7 +4,8 @@ import hmac
 import time
 
 from django.conf import settings
-from django.contrib.auth import login, views as auth_views
+from django.contrib import messages as flash
+from django.contrib.auth import login, logout, views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.http import JsonResponse, HttpResponseForbidden
@@ -237,3 +238,31 @@ class CustomLoginView(auth_views.LoginView):
 
 class CustomLogoutView(auth_views.LogoutView):
     next_page = reverse_lazy('chat:index')
+
+
+class CustomPasswordChangeView(auth_views.PasswordChangeView):
+    template_name = 'registration/password_change.html'
+    success_url = reverse_lazy('chat:index')
+
+    def form_valid(self, form):
+        flash.success(self.request, 'Parola a fost schimbată.')
+        return super().form_valid(form)
+
+
+@login_required
+def delete_account(request):
+    """Self-service account deletion; requires the current password.
+
+    Hard delete: the user's messages cascade with the account, so the data
+    actually leaves the database (privacy by default).
+    """
+    error = None
+    if request.method == 'POST':
+        if request.user.check_password(request.POST.get('password', '')):
+            user = request.user
+            logout(request)
+            user.delete()
+            flash.success(request, 'Contul și mesajele tale au fost șterse definitiv.')
+            return redirect('chat:index')
+        error = 'Parolă incorectă.'
+    return render(request, 'registration/delete_account.html', {'error': error})
