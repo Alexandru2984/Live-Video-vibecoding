@@ -61,6 +61,37 @@ class RegistrationViewTests(TestCase):
         self.assertEqual(blocked.status_code, 200)
         self.assertFalse(User.objects.filter(username='two').exists())
 
+    @override_settings(REGISTRATION_RATE_LIMIT=1)
+    def test_rate_limit_ignores_spoofed_forwarded_for(self):
+        ok = self.client.post('/register/', {
+            'username': 'real', 'password1': STRONG, 'password2': STRONG})
+        self.assertEqual(ok.status_code, 302)
+        self.client.logout()
+        # A forged left-most XFF entry must not mint a fresh rate-limit bucket.
+        blocked = self.client.post('/register/', {
+            'username': 'spoofer', 'password1': STRONG, 'password2': STRONG,
+        }, HTTP_X_FORWARDED_FOR='6.6.6.6')
+        self.assertEqual(blocked.status_code, 200)
+        self.assertFalse(User.objects.filter(username='spoofer').exists())
+
+    @override_settings(REGISTRATION_RATE_LIMIT=1)
+    def test_rate_limit_keys_on_cloudflare_header(self):
+        ok = self.client.post('/register/', {
+            'username': 'first_ip', 'password1': STRONG, 'password2': STRONG,
+        }, HTTP_CF_CONNECTING_IP='198.51.100.1')
+        self.assertEqual(ok.status_code, 302)
+        self.client.logout()
+        # Same CF IP: blocked.
+        blocked = self.client.post('/register/', {
+            'username': 'same_ip', 'password1': STRONG, 'password2': STRONG,
+        }, HTTP_CF_CONNECTING_IP='198.51.100.1')
+        self.assertFalse(User.objects.filter(username='same_ip').exists())
+        # Different CF IP: its own bucket.
+        ok2 = self.client.post('/register/', {
+            'username': 'other_ip', 'password1': STRONG, 'password2': STRONG,
+        }, HTTP_CF_CONNECTING_IP='198.51.100.2')
+        self.assertEqual(ok2.status_code, 302)
+
     @override_settings(ALLOW_REGISTRATION=False)
     def test_registration_disabled(self):
         self.assertEqual(self.client.get('/register/').status_code, 403)
@@ -68,6 +99,31 @@ class RegistrationViewTests(TestCase):
             'username': 'nope', 'password1': STRONG, 'password2': STRONG})
         self.assertEqual(resp.status_code, 403)
         self.assertFalse(User.objects.filter(username='nope').exists())
+
+
+@override_settings(LOGIN_RATE_LIMIT=3)
+class LoginRateLimitTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user('victim', password=STRONG)
+
+    def _fail(self, username='victim'):
+        return self.client.post('/login/', {'username': username, 'password': 'wrong'})
+
+    def test_failed_attempts_lock_out_even_correct_password(self):
+        for _ in range(3):
+            self._fail()
+        resp = self.client.post('/login/', {'username': 'victim', 'password': STRONG})
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn('_auth_user_id', self.client.session)
+        self.assertContains(resp, 'Prea multe încercări')
+
+    def test_successful_login_not_counted(self):
+        for _ in range(2):
+            self._fail()
+        resp = self.client.post('/login/', {'username': 'victim', 'password': STRONG})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('_auth_user_id', self.client.session)
 
 
 class RoomMessagesViewTests(TestCase):
@@ -129,6 +185,16 @@ class CreateRoomViewTests(TestCase):
         self.client.force_login(self.user)
         data = self.client.post('/create/', {'room_name': 'dup'}).json()
         self.assertFalse(data['success'])
+
+    @override_settings(ROOM_CREATION_RATE_LIMIT=2)
+    def test_room_creation_rate_limited(self):
+        cache.clear()
+        self.client.force_login(self.user)
+        for name in ('r1', 'r2'):
+            self.assertTrue(self.client.post('/create/', {'room_name': name}).json()['success'])
+        data = self.client.post('/create/', {'room_name': 'r3'}).json()
+        self.assertFalse(data['success'])
+        self.assertFalse(ChatRoom.objects.filter(name='r3').exists())
 
 
 class IceServersViewTests(TestCase):

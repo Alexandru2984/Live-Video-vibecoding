@@ -19,13 +19,35 @@ from .models import ChatRoom, Message
 # How many messages a history page returns.
 HISTORY_PAGE_SIZE = 30
 
+# Failed-login window (seconds) for the per-IP/per-username counters.
+LOGIN_RATE_WINDOW = 600
+
 
 def _client_ip(request):
-    """Best-effort client IP behind nginx/Cloudflare (left-most XFF entry)."""
-    forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
-    if forwarded:
-        return forwarded.split(',')[0].strip()
-    return request.META.get('REMOTE_ADDR', '')
+    """Client IP behind Cloudflare/nginx.
+
+    X-Forwarded-For is deliberately ignored: its left-most entry is attacker
+    controlled (Cloudflare only appends), so keying rate limits on it lets
+    anyone mint fresh identities per request. CF-Connecting-IP is set by
+    Cloudflare; X-Real-IP is set by our nginx. For either to be trustworthy
+    the origin must only accept proxied traffic (firewall to Cloudflare/nginx).
+    """
+    return (
+        request.META.get('HTTP_CF_CONNECTING_IP')
+        or request.META.get('HTTP_X_REAL_IP')
+        or request.META.get('REMOTE_ADDR', '')
+    ).strip()
+
+
+def _bump_rate(key, window):
+    """Atomically count one event; returns the count inside the window."""
+    if cache.add(key, 1, window):
+        return 1
+    try:
+        return cache.incr(key)
+    except ValueError:  # key expired between add() and incr()
+        cache.add(key, 1, window)
+        return 1
 
 
 def index(request):
@@ -94,11 +116,19 @@ def create_room(request):
             'error': 'Folosește doar litere, cifre și underscore în numele camerei.',
         })
 
+    rate_key = f'room-create-rl:{request.user.pk}'
+    if cache.get(rate_key, 0) >= settings.ROOM_CREATION_RATE_LIMIT:
+        return JsonResponse({
+            'success': False,
+            'error': 'Ai creat prea multe camere recent. Încearcă mai târziu.',
+        })
+
     _, created = ChatRoom.objects.get_or_create(
         name=room_name,
         defaults={'description': description[:1000]},
     )
     if created:
+        _bump_rate(rate_key, 3600)
         return JsonResponse({'success': True, 'room_name': room_name})
     return JsonResponse({'success': False, 'error': 'Camera există deja'})
 
@@ -114,8 +144,7 @@ def register(request):
     if request.method == 'POST':
         ip = _client_ip(request)
         cache_key = f'registration-rl:{ip}'
-        attempts = cache.get(cache_key, 0)
-        if attempts >= settings.REGISTRATION_RATE_LIMIT:
+        if cache.get(cache_key, 0) >= settings.REGISTRATION_RATE_LIMIT:
             rate_error = 'Prea multe înregistrări de la această adresă. Încearcă mai târziu.'
             form = RegistrationForm()
         else:
@@ -123,7 +152,7 @@ def register(request):
             if form.is_valid():
                 user = form.save()
                 # Count only successful registrations against the limit.
-                cache.set(cache_key, attempts + 1, 3600)
+                _bump_rate(cache_key, 3600)
                 login(request, user)
                 return redirect('chat:index')
     else:
@@ -159,8 +188,33 @@ def ice_servers(request):
 
 
 class CustomLoginView(auth_views.LoginView):
+    """Login with brute-force protection.
+
+    Failed attempts are counted per client IP and per target username (so a
+    distributed attack on one account is also slowed). Successful logins are
+    never counted; a blocked attempt is not counted either.
+    """
+
     template_name = 'registration/login.html'
     redirect_authenticated_user = True
+
+    def post(self, request, *args, **kwargs):
+        username = (request.POST.get('username') or '').strip().lower()[:150]
+        self._rate_keys = [
+            f'login-rl:ip:{_client_ip(request)}',
+            f'login-rl:user:{username}',
+        ]
+        if any(cache.get(k, 0) >= settings.LOGIN_RATE_LIMIT for k in self._rate_keys):
+            form = self.get_form()
+            form.add_error(None, 'Prea multe încercări eșuate. Așteaptă câteva minute.')
+            self._rate_keys = []  # the blocked attempt itself is not counted
+            return super().form_invalid(form)
+        return super().post(request, *args, **kwargs)
+
+    def form_invalid(self, form):
+        for key in getattr(self, '_rate_keys', []):
+            _bump_rate(key, LOGIN_RATE_WINDOW)
+        return super().form_invalid(form)
 
     def get_success_url(self):
         return self.get_redirect_url() or reverse_lazy('chat:index')

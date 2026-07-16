@@ -228,6 +228,10 @@ TURN_CREDENTIAL_TTL = int(os.environ.get('TURN_CREDENTIAL_TTL', '86400'))
 ALLOW_REGISTRATION = _env_bool('ALLOW_REGISTRATION', True)
 # Max successful registrations allowed per client IP per hour (abuse control).
 REGISTRATION_RATE_LIMIT = int(os.environ.get('REGISTRATION_RATE_LIMIT', '5'))
+# Max failed login attempts per IP (and per username) per 10 minutes.
+LOGIN_RATE_LIMIT = int(os.environ.get('LOGIN_RATE_LIMIT', '10'))
+# Max rooms one user may create per hour.
+ROOM_CREATION_RATE_LIMIT = int(os.environ.get('ROOM_CREATION_RATE_LIMIT', '10'))
 
 # Cache: used for registration rate limiting. Shared (Redis) when available so
 # the limit holds across worker processes; per-process LocMem otherwise.
