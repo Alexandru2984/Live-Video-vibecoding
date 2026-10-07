@@ -7,7 +7,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DB="$PROJECT_DIR/db.sqlite3"
+DB="${DJANGO_DATABASE_PATH:-$PROJECT_DIR/db.sqlite3}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/video}"
 KEEP="${KEEP:-14}"
 PYTHON="$PROJECT_DIR/.venv/bin/python"

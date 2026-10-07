@@ -125,10 +125,14 @@ ASGI_APPLICATION = 'websocket_project.asgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
+DATABASE_PATH = Path(os.environ.get('DJANGO_DATABASE_PATH', BASE_DIR / 'db.sqlite3'))
+if not DATABASE_PATH.is_absolute():
+    raise ImproperlyConfigured('DJANGO_DATABASE_PATH must be an absolute path.')
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': DATABASE_PATH,
     }
 }
 

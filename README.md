@@ -69,11 +69,12 @@ python manage.py runserver
 
 ## ⚙️ Variabile de mediu
 
-Setate în producție prin systemd `EnvironmentFile=/etc/video.env`:
+Setate în producție prin systemd `EnvironmentFile=/etc/video/video.env`:
 
 | Variabilă | Necesară | Descriere |
 |-----------|----------|-----------|
 | `DJANGO_SECRET_KEY` | **da** (prod) | Cheie secretă. Generează: `python -c "import secrets; print(secrets.token_urlsafe(64))"` |
+| `DJANGO_DATABASE_PATH` | nu | Cale absolută spre SQLite; în serviciul izolat: `/var/lib/video/db.sqlite3` |
 | `DJANGO_DEBUG` | nu (implicit `False`) | `True` doar local |
 | `DJANGO_ALLOWED_HOSTS` | nu | CSV, ex: `video.micutu.com,localhost,127.0.0.1` |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | nu | CSV cu schemă, ex: `https://video.micutu.com` |
@@ -92,7 +93,7 @@ Setate în producție prin systemd `EnvironmentFile=/etc/video.env`:
 | `SENTRY_DSN` | nu | Error tracking opțional (inclus în requirements) |
 
 > ⚠️ În producție, fără `DJANGO_SECRET_KEY` aplicația **refuză să pornească**
-> (intenționat — fail closed). Configurează `/etc/video.env` înainte de restart.
+> (intenționat — fail closed). Configurează `/etc/video/video.env` înainte de restart.
 
 ## 📹 Video (mesh) și TURN
 
@@ -109,7 +110,7 @@ expune nicio parolă statică. Ca să activezi TURN mai târziu:
 1. Instalează `coturn`, setează în config-ul lui `use-auth-secret` +
    `static-auth-secret=<S>` și un realm; restricționează relay-ul cu
    `denied-peer-ip` pentru rețelele interne (10.x/192.168.x/169.254.x/127.x).
-2. Pune în `/etc/video.env`: `TURN_SHARED_SECRET=<S>` și
+2. Pune în `/etc/video/video.env`: `TURN_SHARED_SECRET=<S>` și
    `TURN_URLS=turn:<host>:3478,turns:<host>:5349`.
 3. Repornește serviciul. Clientul preia automat noile servere ICE.
 
@@ -121,8 +122,10 @@ expune nicio parolă statică. Ca să activezi TURN mai târziu:
 - **Health check:** `GET /healthz` → `{"status": "ok"}` (fără autentificare) —
   pune-l în uptime monitoring extern.
 - **Backup DB:** `scripts/backup_db.sh` (API-ul de backup SQLite, consistent cu
-  aplicația pornită; păstrează ultimele 14 arhive). Cron sugerat:
-  `30 3 * * * /home/micu/Video/scripts/backup_db.sh`
+  aplicația pornită; păstrează ultimele 14 arhive). În producție indică explicit
+  baza izolată și rulează backup-ul ca root, astfel încât serviciul să nu poată
+  citi sau modifica arhivele:
+  `sudo env DJANGO_DATABASE_PATH=/var/lib/video/db.sqlite3 BACKUP_DIR=/home/micu/backups/video /home/micu/Video/scripts/backup_db.sh`
 - **Retenție mesaje:** `python manage.py purge_messages --days 90 [--room X] [--dry-run]`
 - **Rotire parole:**
 
