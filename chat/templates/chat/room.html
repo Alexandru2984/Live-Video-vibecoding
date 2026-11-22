@@ -1,42 +1,218 @@
 {% extends 'chat/base.html' %}
 
-{% block title %}{{ room_name }}{% endblock %}
+{% block title %}#{{ room_name }}{% endblock %}
+{% block meta_robots %}{% if chat_room.is_private %}noindex, nofollow{% else %}index, follow{% endif %}{% endblock %}
+{% block meta_description %}{% if chat_room.is_private %}Cameră privată de chat pe micutu chat.{% else %}Camera #{{ room_name }} pe micutu chat — {{ chat_room.description|default:"conversații live și apel video de grup în timp real."|truncatechars:140 }}{% endif %}{% endblock %}
 
 {% block extra_head %}
 <style>
-    .chat-log { height: 52vh; min-height: 280px; overflow-y: auto; padding: 16px; }
-    @media (max-width: 991.98px) { .chat-log { height: 48dvh; } }
+    .chat-card { position: relative; }
+    .chat-log {
+        height: 58vh; min-height: 320px;
+        overflow-y: auto; padding: 16px;
+        scroll-behavior: smooth;
+    }
+    @media (max-width: 991.98px) {
+        .chat-log { height: 54dvh; min-height: 260px; padding: 12px; }
+    }
 
-    .message { margin-bottom: .75rem; }
+    .message {
+        margin-bottom: .75rem;
+        padding: .35rem .5rem;
+        border-radius: .75rem;
+        transition: background-color .2s ease;
+        position: relative;
+    }
+    .message:hover { background: rgba(106, 120, 240, 0.05); }
+    .message.highlight-flash {
+        animation: flashHighlight 1.8s ease;
+    }
+    @keyframes flashHighlight {
+        0%, 30% { background: rgba(250, 204, 21, 0.28); }
+        100% { background: transparent; }
+    }
+
     .message-content {
         background: var(--bs-tertiary-bg);
-        padding: .4rem .7rem;
-        border-radius: .65rem;
+        padding: .45rem .75rem;
+        border-radius: .7rem;
         display: inline-block;
         max-width: 100%;
+        line-height: 1.45;
+        white-space: pre-wrap;
     }
-    .message.video-notification .message-content { background: var(--brand-grad); color: #fff; }
+    .message.own-message .message-content {
+        background: rgba(106, 120, 240, 0.15);
+        border: 1px solid rgba(106, 120, 240, 0.25);
+    }
+    .message.action-message .message-content {
+        font-style: italic;
+        background: transparent;
+        border: 1px dashed var(--bs-border-color);
+    }
+    .message.video-notification .message-content {
+        background: var(--brand-grad);
+        color: #fff;
+    }
 
-    .online-dot { width: 9px; height: 9px; border-radius: 50%; background: #22c55e; display: inline-block; }
+    /* Rich formatting elements */
+    .code-inline {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: .86em;
+        background: rgba(0, 0, 0, 0.12);
+        padding: .1rem .35rem;
+        border-radius: .3rem;
+    }
+    [data-bs-theme="dark"] .code-inline { background: rgba(255, 255, 255, 0.12); }
+    .code-block {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: .84em;
+        background: #141724;
+        color: #e7e9f3;
+        padding: .6rem .8rem;
+        border-radius: .5rem;
+        margin: .35rem 0 0;
+        overflow-x: auto;
+        white-space: pre;
+    }
+    .mention-badge {
+        background: rgba(106, 120, 240, 0.18);
+        color: var(--bs-emphasis-color);
+        font-weight: 600;
+        padding: .05rem .35rem;
+        border-radius: .35rem;
+    }
+    .mention-badge.mention-me {
+        background: rgba(245, 158, 11, 0.28);
+        color: #d97706;
+        border: 1px solid rgba(245, 158, 11, 0.45);
+    }
+    [data-bs-theme="dark"] .mention-badge.mention-me { color: #fbbf24; }
 
+    /* Reply quote block */
+    .reply-quote {
+        display: flex; align-items: center; gap: .4rem;
+        font-size: .78rem;
+        color: var(--bs-secondary-color);
+        border-left: 3px solid var(--brand-1);
+        background: rgba(106, 120, 240, 0.08);
+        padding: .2rem .55rem;
+        border-radius: 0 .4rem .4rem 0;
+        margin-bottom: .3rem;
+        cursor: pointer;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .reply-quote:hover { background: rgba(106, 120, 240, 0.15); }
+
+    /* Message hover action bar */
+    .msg-actions {
+        display: inline-flex; align-items: center; gap: .15rem;
+        opacity: 0;
+        transition: opacity .15s ease;
+    }
+    .message:hover .msg-actions,
+    .message:focus-within .msg-actions { opacity: 1; }
+    @media (hover: none) { .msg-actions { opacity: 1; } }
+
+    .msg-action-btn, .msg-del {
+        border: none; background: transparent;
+        color: var(--bs-secondary-color);
+        padding: .1rem .35rem;
+        font-size: .82rem;
+        line-height: 1;
+        border-radius: .35rem;
+        cursor: pointer;
+    }
+    .msg-action-btn:hover { color: var(--bs-primary); background: var(--bs-secondary-bg); }
+    .msg-del:hover { color: var(--bs-danger); background: var(--bs-secondary-bg); }
+
+    /* Quick reaction picker & reaction pills */
+    .quick-react-picker {
+        display: inline-flex; gap: .15rem;
+        background: var(--bs-body-bg);
+        border: 1px solid var(--bs-border-color);
+        border-radius: 999px;
+        padding: .15rem .4rem;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+        margin-top: .25rem;
+    }
+    .quick-react-picker button {
+        border: none; background: transparent;
+        font-size: 1rem; padding: .1rem .25rem;
+        border-radius: 50%; cursor: pointer;
+        transition: transform .1s ease;
+    }
+    .quick-react-picker button:hover { transform: scale(1.25); }
+
+    .reactions-bar {
+        display: flex; flex-wrap: wrap; gap: .3rem;
+        margin-top: .3rem;
+    }
+    .reaction-pill {
+        display: inline-flex; align-items: center; gap: .25rem;
+        font-size: .78rem;
+        padding: .12rem .48rem;
+        border-radius: 999px;
+        border: 1px solid var(--bs-border-color);
+        background: var(--bs-body-bg);
+        color: var(--bs-body-color);
+        cursor: pointer;
+        user-select: none;
+        transition: all .15s ease;
+    }
+    .reaction-pill:hover { border-color: var(--brand-1); }
+    .reaction-pill.active {
+        background: rgba(106, 120, 240, 0.18);
+        border-color: var(--brand-1);
+        font-weight: 600;
+    }
+
+    .online-dot { width: 9px; height: 9px; border-radius: 50%; background: #22c55e; display: inline-block; flex-shrink: 0; }
     .typing-indicator { min-height: 1.4rem; font-style: italic; }
 
     .day-sep {
         display: flex; align-items: center; gap: .75rem;
         margin: 1rem 0; color: var(--bs-secondary-color);
-        font-size: .78rem; text-transform: uppercase; letter-spacing: .4px;
+        font-size: .75rem; text-transform: uppercase; letter-spacing: .4px;
     }
     .day-sep::before, .day-sep::after {
         content: ''; flex: 1; border-top: 1px solid var(--bs-border-color);
     }
 
-    .msg-del {
-        border: none; background: transparent; color: var(--bs-secondary-color);
-        padding: 0 .3rem; line-height: 1; border-radius: .3rem; visibility: hidden;
+    /* Floating unread messages pill */
+    .unread-pill {
+        position: absolute;
+        bottom: 72px; left: 50%;
+        transform: translateX(-50%);
+        z-index: 10;
+        border-radius: 999px;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+        font-size: .82rem;
+        padding: .35rem .9rem;
     }
-    .msg-del:hover { color: var(--bs-danger); background: var(--bs-secondary-bg); }
-    .message:hover .msg-del, .message:focus-within .msg-del { visibility: visible; }
-    @media (hover: none) { .msg-del { visibility: visible; } }
+
+    /* Compose context (reply / edit) & @mention autocomplete */
+    .compose-context {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: .5rem;
+        background: rgba(106, 120, 240, 0.1);
+        border-left: 3px solid var(--brand-1);
+        padding: .35rem .65rem;
+        border-radius: .45rem;
+        margin-bottom: .45rem;
+        font-size: .82rem;
+    }
+    .mention-suggest {
+        display: flex; gap: .35rem; flex-wrap: wrap;
+        padding: .35rem .5rem;
+        margin-bottom: .4rem;
+        background: var(--bs-tertiary-bg);
+        border-radius: .5rem;
+        font-size: .82rem;
+    }
 
     .emoji-panel {
         display: flex; flex-wrap: wrap; gap: .15rem;
@@ -48,40 +224,72 @@
     }
     .emoji-panel button:hover { background: var(--bs-secondary-bg); }
 
-    .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+    .pinned-banner {
+        background: rgba(245, 158, 11, 0.1);
+        border-bottom: 1px solid rgba(245, 158, 11, 0.25);
+        max-height: 170px;
+        overflow-y: auto;
+    }
+
+    .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .85rem; }
+    @media (max-width: 575.98px) {
+        .video-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; }
+    }
     .video-tile { position: relative; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 4 / 3; }
     .video-tile video { width: 100%; height: 100%; object-fit: cover; background: #000; }
     .video-tile .video-label {
         position: absolute; left: 8px; right: 8px; bottom: 8px;
-        display: flex; justify-content: space-between; align-items: center; gap: .5rem;
-        color: #fff; font-size: .8rem; text-shadow: 0 1px 3px rgba(0,0,0,.9);
+        display: flex; justify-content: space-between; align-items: center; gap: .4rem;
+        color: #fff; font-size: .78rem; text-shadow: 0 1px 3px rgba(0,0,0,.9);
     }
-    .video-tile .video-label .btn { --bs-btn-padding-y: .1rem; --bs-btn-padding-x: .4rem; }
+    .video-tile .video-label .btn { --bs-btn-padding-y: .1rem; --bs-btn-padding-x: .38rem; }
     #localVideo { transform: scaleX(-1); }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
-    <div class="d-flex align-items-center gap-2">
-        <a href="{% url 'chat:index' %}" class="btn btn-sm btn-outline-secondary" title="Înapoi">
+<div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+    <div class="d-flex align-items-center gap-2 min-w-0">
+        <a href="{% url 'chat:index' %}" class="btn btn-sm btn-outline-secondary" title="Înapoi la camere">
             <i class="bi bi-arrow-left"></i>
         </a>
-        <h1 class="h4 mb-0">
-            <i class="bi bi-hash"></i>{{ room_name }}
-            {% if chat_room.is_private %}<i class="bi bi-lock-fill text-warning fs-6" title="Cameră privată"></i>{% endif %}
-        </h1>
+        <div class="min-w-0">
+            <h1 class="h4 mb-0 text-truncate">
+                <i class="bi bi-hash text-primary"></i>{{ room_name }}
+                <span id="roomPrivateLock" class="{% if not chat_room.is_private %}d-none{% endif %}">
+                    <i class="bi bi-lock-fill text-warning fs-6" title="Cameră privată"></i>
+                </span>
+            </h1>
+        </div>
     </div>
-    <div class="d-flex align-items-center gap-2">
+
+    <div class="d-flex align-items-center gap-1 flex-wrap">
+        <button id="toggleSearchBtn" type="button" class="btn btn-sm btn-outline-secondary" title="Caută în mesaje">
+            <i class="bi bi-search"></i> <span class="d-none d-md-inline">Caută</span>
+        </button>
+        <button id="togglePinnedBtn" type="button" class="btn btn-sm btn-outline-warning" title="Mesaje fixate">
+            <i class="bi bi-pin-angle-fill"></i>
+            <span id="pinnedCountBadge">{{ pinned_messages|length }}</span>
+        </button>
+        <button id="mobileSidebarBtn" type="button" class="btn btn-sm btn-outline-primary d-lg-none"
+                data-bs-toggle="collapse" data-bs-target="#sidebarColumn" aria-expanded="false"
+                title="Utilizatori online și setări">
+            <i class="bi bi-people-fill"></i> <span id="mobileOnlineCount">1</span>
+        </button>
+
         {% if chat_room.owner_id == user.id %}
-            <span id="ownerControls" class="d-flex gap-2">
+            <span id="ownerControls" class="d-inline-flex gap-1">
                 {% csrf_token %}
                 {% if chat_room.is_private %}
-                <button id="inviteBtn" class="btn btn-sm btn-outline-primary" title="Copiază link de invitație">
-                    <i class="bi bi-link-45deg"></i> Invită
+                <button id="inviteBtn" type="button" class="btn btn-sm btn-outline-primary" title="Copiază link de invitație">
+                    <i class="bi bi-link-45deg"></i> <span class="d-none d-sm-inline">Invită</span>
                 </button>
                 {% endif %}
-                <button id="deleteRoomBtn" class="btn btn-sm btn-outline-danger" title="Șterge camera">
+                <button id="manageRoomBtn" type="button" class="btn btn-sm btn-outline-secondary"
+                        data-bs-toggle="modal" data-bs-target="#manageRoomModal" title="Setări cameră & membri">
+                    <i class="bi bi-gear"></i>
+                </button>
+                <button id="deleteRoomBtn" type="button" class="btn btn-sm btn-outline-danger" title="Șterge camera">
                     <i class="bi bi-trash"></i>
                 </button>
             </span>
@@ -90,55 +298,149 @@
     </div>
 </div>
 
-{% if chat_room.description %}
-    <div class="alert alert-info py-2"><i class="bi bi-info-circle"></i> {{ chat_room.description }}</div>
-{% endif %}
+<div id="roomDescriptionBanner" class="alert alert-info py-2 small mb-2 {% if not chat_room.description %}d-none{% endif %}">
+    <i class="bi bi-info-circle"></i> <span id="roomDescriptionText">{{ chat_room.description }}</span>
+</div>
 
 <div class="row g-3">
     <div class="col-lg-8">
-        <div class="card shadow-sm">
-            <div class="card-header bg-transparent d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-chat-dots"></i> Conversație</span>
-                <span class="badge text-bg-primary" id="userCount">1 online</span>
+        <div class="card shadow-sm chat-card">
+            <div class="card-header bg-transparent d-flex justify-content-between align-items-center py-2">
+                <span class="fw-semibold"><i class="bi bi-chat-dots text-primary"></i> Conversație</span>
+                <div class="d-flex align-items-center gap-2">
+                    <small class="text-body-secondary d-none d-sm-inline">Tastează <code>/help</code> sau <code>@nume</code></small>
+                    <span class="badge text-bg-primary" id="userCount">1 online</span>
+                </div>
             </div>
-            <div class="card-body p-0">
+
+            <!-- In-room search collapsible bar -->
+            <div id="searchPanel" class="border-bottom p-2 bg-body-tertiary d-none">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text bg-transparent"><i class="bi bi-search"></i></span>
+                    <input type="search" id="roomSearchInput" class="form-control"
+                           placeholder="Caută cuvinte sau @utilizator în istoric…" autocomplete="off" maxlength="100">
+                    <button type="button" id="closeSearchBtn" class="btn btn-outline-secondary">&times;</button>
+                </div>
+                <div id="searchResults" class="mt-2 small" style="max-height: 180px; overflow-y: auto;"></div>
+            </div>
+
+            <!-- Pinned messages collapsible banner -->
+            <div id="pinnedPanel" class="pinned-banner p-2 small {% if not pinned_messages %}d-none{% endif %}">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <strong class="text-warning-emphasis"><i class="bi bi-pin-angle-fill"></i> Mesaje fixate</strong>
+                    <button type="button" id="hidePinnedBtn" class="btn-close btn-sm" aria-label="Ascunde"></button>
+                </div>
+                <div id="pinnedList" class="d-flex flex-column gap-1">
+                    {% for pm in pinned_messages %}
+                    <div class="d-flex align-items-center justify-content-between gap-2 px-2 py-1 rounded bg-body-tertiary pinned-item"
+                         data-pin-id="{{ pm.id }}">
+                        <div class="text-truncate" role="button" data-jump-id="{{ pm.id }}">
+                            <strong>{{ pm.user.username }}:</strong>
+                            <span>{{ pm.content|truncatechars:120 }}</span>
+                        </div>
+                        {% if chat_room.owner_id == user.id or user.is_staff %}
+                        <button type="button" class="btn btn-sm btn-link text-danger p-0 unpin-btn"
+                                data-pin-id="{{ pm.id }}" title="Anulează fixarea">&times;</button>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="card-body p-0 position-relative">
                 <div id="loadMoreWrap" class="text-center py-2 d-none">
                     <button id="loadMore" class="btn btn-sm btn-outline-secondary">
                         <i class="bi bi-arrow-up"></i> Mesaje mai vechi
                     </button>
                 </div>
+
                 <div id="chat-log" class="chat-log">
                     {% for message in messages %}
-                        <div class="message" data-mid="{{ message.id }}" data-date="{{ message.timestamp|date:'Y-m-d' }}">
-                            <div class="d-flex align-items-start">
-                                <div class="avatar me-2">
-                                    <i class="bi bi-person-circle text-primary" style="font-size: 1.5rem;"></i>
+                        <div class="message {% if message.user_id == user.id %}own-message{% endif %}"
+                             data-mid="{{ message.id }}"
+                             data-username="{{ message.user.username }}"
+                             data-raw="{{ message.content }}"
+                             data-pinned="{{ message.is_pinned|yesno:'true,false' }}"
+                             data-reactions="{{ message.reactions_json }}"
+                             data-date="{{ message.timestamp|date:'Y-m-d' }}">
+                            <div class="d-flex align-items-start gap-2">
+                                <div class="user-avatar" data-avatar-user="{{ message.user.username }}">
+                                    {{ message.user.username|slice:":2" }}
                                 </div>
-                                <div class="flex-grow-1">
-                                    <div class="d-flex align-items-center mb-1">
-                                        <strong class="me-2">{{ message.user.username }}</strong>
+                                <div class="flex-grow-1 min-w-0">
+                                    <div class="d-flex align-items-center flex-wrap gap-1 mb-1">
+                                        <strong class="me-1">{{ message.user.username }}</strong>
                                         <small class="text-body-secondary">{{ message.timestamp|date:"H:i" }}</small>
-                                        {% if message.user_id == user.id %}
-                                            <button type="button" class="msg-del ms-1" title="Șterge mesajul"
-                                                    aria-label="Șterge mesajul">&times;</button>
-                                        {% endif %}
+                                        <small class="text-body-secondary fst-italic edited-tag {% if not message.edited_at %}d-none{% endif %}">(editat)</small>
+                                        <i class="bi bi-pin-angle-fill text-warning small pin-tag {% if not message.is_pinned %}d-none{% endif %}" title="Mesaj fixat"></i>
+
+                                        <span class="msg-actions ms-auto">
+                                            <button type="button" class="msg-action-btn msg-reply-btn" title="Răspunde" aria-label="Răspunde">
+                                                <i class="bi bi-reply"></i>
+                                            </button>
+                                            <button type="button" class="msg-action-btn msg-react-btn" title="Reacționează" aria-label="Reacționează">
+                                                <i class="bi bi-emoji-smile"></i>
+                                            </button>
+                                            {% if message.user_id == user.id %}
+                                                <button type="button" class="msg-action-btn msg-edit-btn" title="Editează mesajul" aria-label="Editează mesajul">
+                                                    <i class="bi bi-pencil"></i>
+                                                </button>
+                                            {% endif %}
+                                            {% if chat_room.owner_id == user.id or user.is_staff %}
+                                                <button type="button" class="msg-action-btn msg-pin-btn" title="Fixează / eliberează mesajul" aria-label="Fixează mesajul">
+                                                    <i class="bi bi-pin-angle"></i>
+                                                </button>
+                                            {% endif %}
+                                            {% if message.user_id == user.id %}
+                                                <button type="button" class="msg-del" title="Șterge mesajul" aria-label="Șterge mesajul">&times;</button>
+                                            {% endif %}
+                                        </span>
                                     </div>
+
+                                    {% if message.reply_to %}
+                                        <div class="reply-quote" data-jump-id="{{ message.reply_to.id }}">
+                                            <i class="bi bi-reply-fill"></i>
+                                            <strong>@{{ message.reply_to.user.username }}:</strong>
+                                            <span class="text-truncate">{{ message.reply_to.content|truncatechars:100 }}</span>
+                                        </div>
+                                    {% endif %}
+
                                     <div class="message-content">{{ message.content }}</div>
+                                    <div class="reactions-bar"></div>
                                 </div>
                             </div>
                         </div>
                     {% endfor %}
                 </div>
+
+                <button id="unreadPill" type="button" class="btn btn-brand btn-sm unread-pill d-none">
+                    <i class="bi bi-arrow-down-circle"></i> <span id="unreadPillText">Mesaje noi</span>
+                </button>
+
                 <div id="typingIndicator" class="typing-indicator px-3 small text-body-secondary"></div>
             </div>
+
             <div class="card-footer bg-transparent">
                 {% if user.is_authenticated %}
+                    <!-- Active Reply or Edit context banner -->
+                    <div id="composeContextBar" class="compose-context d-none">
+                        <div class="text-truncate">
+                            <i id="composeContextIcon" class="bi bi-reply-fill text-primary me-1"></i>
+                            <strong id="composeContextLabel">Răspunzi:</strong>
+                            <span id="composeContextText" class="text-body-secondary ms-1"></span>
+                        </div>
+                        <button type="button" id="cancelComposeContext" class="btn-close btn-sm" aria-label="Anulează"></button>
+                    </div>
+
+                    <!-- @username autocomplete bar -->
+                    <div id="mentionSuggestBar" class="mention-suggest d-none"></div>
+
                     <div class="input-group">
                         <button class="btn btn-outline-secondary" type="button" id="emojiBtn" title="Emoji">
                             <i class="bi bi-emoji-smile"></i>
                         </button>
                         <input type="text" id="chat-message-input" class="form-control"
-                               placeholder="Scrie un mesaj…" autocomplete="off" maxlength="2000">
+                               placeholder="Scrie un mesaj, @nume sau /help…" autocomplete="off" maxlength="2000">
                         <button class="btn btn-brand" type="button" id="chat-message-submit">
                             <i class="bi bi-send"></i><span class="d-none d-sm-inline"> Trimite</span>
                         </button>
@@ -154,20 +456,21 @@
         </div>
     </div>
 
-    <div class="col-lg-4">
+    <div class="col-lg-4 collapse d-lg-block" id="sidebarColumn">
         <div class="card shadow-sm">
-            <div class="card-header bg-transparent">
-                <i class="bi bi-people"></i> Online (<span id="onlineCount">1</span>)
+            <div class="card-header bg-transparent d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-people"></i> Online (<span id="onlineCount">1</span>)</span>
+                <small class="text-body-secondary">Click pt. @mențiune</small>
             </div>
-            <ul id="userList" class="list-group list-group-flush"></ul>
+            <ul id="userList" class="list-group list-group-flush" style="max-height: 240px; overflow-y: auto;"></ul>
         </div>
 
         <div class="card shadow-sm mt-3">
-            <div class="card-header bg-transparent"><i class="bi bi-sliders"></i> Setări</div>
+            <div class="card-header bg-transparent"><i class="bi bi-sliders"></i> Setări & Notificări</div>
             <div class="card-body">
                 <div class="form-check form-switch mb-2">
                     <input class="form-check-input" type="checkbox" id="soundNotifications">
-                    <label class="form-check-label" for="soundNotifications">Sunet la mesaje</label>
+                    <label class="form-check-label" for="soundNotifications">Sunet la mesaje și @mențiuni</label>
                 </div>
                 <div class="form-check form-switch mb-2">
                     <input class="form-check-input" type="checkbox" id="desktopNotifications">
@@ -182,10 +485,11 @@
     </div>
 </div>
 
+<!-- Video Call Section -->
 <div class="card shadow-sm mt-3">
     <div class="card-header bg-transparent d-flex justify-content-between align-items-center flex-wrap gap-2">
         <span>
-            <i class="bi bi-camera-video"></i> Video chat
+            <i class="bi bi-camera-video text-primary"></i> Video chat
             <span class="badge text-bg-secondary ms-1" id="callCount" title="Participanți în apel">0</span>
         </span>
         <div class="d-flex align-items-center gap-2">
@@ -203,20 +507,81 @@
                 <video id="localVideo" autoplay muted playsinline></video>
                 <div class="video-label">
                     <span><i class="bi bi-person-circle"></i> Tu</span>
-                    <span>
+                    <span class="d-flex gap-1">
                         <button id="toggleAudio" class="btn btn-sm btn-light" title="Microfon"><i class="bi bi-mic"></i></button>
                         <button id="toggleVideoCamera" class="btn btn-sm btn-light" title="Cameră"><i class="bi bi-camera-video"></i></button>
                         <button id="toggleScreen" class="btn btn-sm btn-light" title="Partajează ecranul"><i class="bi bi-display"></i></button>
+                        <button id="fullscreenLocal" class="btn btn-sm btn-light" title="Ecran complet"><i class="bi bi-arrows-fullscreen"></i></button>
                     </span>
                 </div>
             </div>
             <!-- remote tiles injected here -->
         </div>
         <div class="text-body-secondary small mt-2">
-            <i class="bi bi-info-circle"></i> Intră în apel ca să vezi și să fii văzut. Funcționează cu mai mulți participanți.
+            <i class="bi bi-info-circle"></i> Apel video P2P criptat WebRTC cu partajare de ecran și reconectare ICE automată.
         </div>
     </div>
 </div>
+
+{% if chat_room.owner_id == user.id %}
+<!-- Owner Room Management Modal -->
+<div class="modal fade" id="manageRoomModal" tabindex="-1" aria-labelledby="manageRoomModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="manageRoomModalLabel">
+                    <i class="bi bi-gear"></i> Administrare #{{ room_name }}
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Închide"></button>
+            </div>
+            <div class="modal-body">
+                <form id="updateRoomForm">
+                    <div class="mb-3">
+                        <label for="editRoomDescription" class="form-label">Descrierea camerei</label>
+                        <textarea id="editRoomDescription" name="description" class="form-control" rows="2" maxlength="1000">{{ chat_room.description }}</textarea>
+                    </div>
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="editRoomPrivate" name="is_private" {% if chat_room.is_private %}checked{% endif %}>
+                        <label class="form-check-label" for="editRoomPrivate">
+                            <i class="bi bi-lock"></i> Cameră privată (acces doar pe bază de invitație)
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-brand btn-sm">
+                        <i class="bi bi-check2"></i> Salvează setările
+                    </button>
+                </form>
+
+                <hr>
+                <h6><i class="bi bi-link-45deg"></i> Securitate invitații</h6>
+                <p class="small text-body-secondary mb-2">
+                    Dacă un link de invitație a fost distribuit neautorizat, îl poți invalida instantaneu (Versiune curentă: <strong id="inviteVersionLabel">{{ chat_room.invite_version }}</strong>).
+                </p>
+                <button type="button" id="revokeInvitesBtn" class="btn btn-sm btn-outline-warning">
+                    <i class="bi bi-shield-x"></i> Revocă toate linkurile de invitație
+                </button>
+
+                {% if chat_room.is_private %}
+                <hr>
+                <h6><i class="bi bi-people"></i> Membri invitați ({{ room_members|length }})</h6>
+                <ul class="list-group list-group-flush small" id="membersManageList">
+                    {% for member in room_members %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0" data-member="{{ member.username }}">
+                        <span><i class="bi bi-person"></i> {{ member.username }}</span>
+                        <button type="button" class="btn btn-sm btn-outline-danger kick-member-btn" data-username="{{ member.username }}">
+                            <i class="bi bi-person-x"></i> Elimină
+                        </button>
+                    </li>
+                    {% empty %}
+                    <li class="list-group-item text-body-secondary px-0">Niciun alt membru adăugat încă.</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+                <div id="manageRoomFeedback" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 <script id="room-name" type="application/json" nonce="{{ csp_nonce }}">"{{ room_name|escapejs }}"</script>
 {% endblock %}
@@ -229,7 +594,10 @@
     const roomName = JSON.parse(document.getElementById('room-name').textContent);
     const userName = "{{ user.username|escapejs }}";
     const isAuthenticated = {{ user.is_authenticated|yesno:"true,false" }};
+    const isRoomOwnerOrStaff = {% if chat_room.owner_id == user.id or user.is_staff %}true{% else %}false{% endif %};
     const messagesUrl = "{% url 'chat:room_messages' room_name %}";
+    const searchUrl = "{% url 'chat:room_search' room_name %}";
+    const ALLOWED_REACTIONS = ['👍', '❤️', '😂', '🔥', '😮', '😢', '🎉', '💯'];
 
     const chatLog = document.getElementById('chat-log');
     const messageInput = document.getElementById('chat-message-input');
@@ -237,10 +605,117 @@
     const connectionStatus = document.getElementById('connectionStatus');
     const userCountBadge = document.getElementById('userCount');
     const onlineCount = document.getElementById('onlineCount');
+    const mobileOnlineCount = document.getElementById('mobileOnlineCount');
     const userList = document.getElementById('userList');
     const typingIndicator = document.getElementById('typingIndicator');
     const loadMoreWrap = document.getElementById('loadMoreWrap');
     const loadMoreBtn = document.getElementById('loadMore');
+    const unreadPill = document.getElementById('unreadPill');
+    const unreadPillText = document.getElementById('unreadPillText');
+    const pinnedPanel = document.getElementById('pinnedPanel');
+    const pinnedList = document.getElementById('pinnedList');
+    const pinnedCountBadge = document.getElementById('pinnedCountBadge');
+
+    const composeContextBar = document.getElementById('composeContextBar');
+    const composeContextIcon = document.getElementById('composeContextIcon');
+    const composeContextLabel = document.getElementById('composeContextLabel');
+    const composeContextText = document.getElementById('composeContextText');
+    const cancelComposeContext = document.getElementById('cancelComposeContext');
+    const mentionSuggestBar = document.getElementById('mentionSuggestBar');
+
+    let activeReplyId = null;
+    let activeEditId = null;
+    let onlineUsersList = [];
+    let unreadCount = 0;
+    const baseTitle = '#' + roomName + ' · micutu';
+
+    // ---- deterministic user avatar color ----------------------------------
+    const AVATAR_PALETTE = [
+        '#5b6fe0', '#8a5cd0', '#0ea5e9', '#10b981',
+        '#f59e0b', '#ef4444', '#ec4899', '#6366f1',
+        '#14b8a6', '#8b5cf6', '#d97706', '#0284c7',
+    ];
+    function avatarColor(name) {
+        let h = 0;
+        const s = String(name || '');
+        for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+        return AVATAR_PALETTE[Math.abs(h) % AVATAR_PALETTE.length];
+    }
+    function makeAvatarNode(username, specialIcon) {
+        const div = document.createElement('div');
+        div.className = 'user-avatar';
+        if (specialIcon) {
+            div.style.background = '#64748b';
+            const i = document.createElement('i');
+            i.className = 'bi ' + specialIcon;
+            div.appendChild(i);
+        } else {
+            div.style.background = avatarColor(username);
+            div.textContent = (username || '?').slice(0, 2);
+        }
+        return div;
+    }
+
+    // ---- XSS-safe rich text renderer (DOM nodes only, never innerHTML) ----
+    const TOKEN_RE = /(```[\s\S]+?```|`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|https?:\/\/[^\s<>"']+|@[A-Za-z0-9_.-]+)/g;
+
+    function renderRichText(container, rawText) {
+        container.replaceChildren();
+        let text = String(rawText || '');
+        const isAction = text.startsWith('/me ') || text.startsWith('* ');
+        if (text.startsWith('/me ')) text = text.slice(4);
+
+        let lastIdx = 0;
+        let match;
+        TOKEN_RE.lastIndex = 0;
+        while ((match = TOKEN_RE.exec(text)) !== null) {
+            if (match.index > lastIdx) {
+                container.appendChild(document.createTextNode(text.slice(lastIdx, match.index)));
+            }
+            const tok = match[0];
+            if (tok.startsWith('```') && tok.endsWith('```') && tok.length > 6) {
+                const pre = document.createElement('pre');
+                pre.className = 'code-block';
+                const code = document.createElement('code');
+                code.textContent = tok.slice(3, -3).replace(/^\n+|\n+$/g, '');
+                pre.appendChild(code);
+                container.appendChild(pre);
+            } else if (tok.startsWith('`') && tok.endsWith('`')) {
+                const code = document.createElement('code');
+                code.className = 'code-inline';
+                code.textContent = tok.slice(1, -1);
+                container.appendChild(code);
+            } else if (tok.startsWith('**') && tok.endsWith('**')) {
+                const strong = document.createElement('strong');
+                strong.textContent = tok.slice(2, -2);
+                container.appendChild(strong);
+            } else if (tok.startsWith('*') && tok.endsWith('*')) {
+                const em = document.createElement('em');
+                em.textContent = tok.slice(1, -1);
+                container.appendChild(em);
+            } else if (tok.startsWith('http://') || tok.startsWith('https://')) {
+                const a = document.createElement('a');
+                a.href = tok;
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+                a.textContent = tok;
+                container.appendChild(a);
+            } else if (tok.startsWith('@')) {
+                const span = document.createElement('span');
+                const mentioned = tok.slice(1);
+                span.className = 'mention-badge' + (mentioned === userName ? ' mention-me' : '');
+                span.textContent = tok;
+                container.appendChild(span);
+            } else {
+                container.appendChild(document.createTextNode(tok));
+            }
+            lastIdx = TOKEN_RE.lastIndex;
+        }
+        if (lastIdx < text.length) {
+            container.appendChild(document.createTextNode(text.slice(lastIdx)));
+        }
+        return isAction;
+    }
 
     // ---- settings (persisted) --------------------------------------------
     function getSetting(key, def) {
@@ -265,10 +740,40 @@
         }
     });
 
-    // ---- helpers ----------------------------------------------------------
-    function autoScroll() {
-        if (!autoScrollCb || autoScrollCb.checked) chatLog.scrollTop = chatLog.scrollHeight;
+    // ---- scroll & unread tracking -----------------------------------------
+    function isNearBottom() {
+        return chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 110;
     }
+    function clearUnread() {
+        unreadCount = 0;
+        if (unreadPill) unreadPill.classList.add('d-none');
+        document.title = baseTitle;
+    }
+    function autoScroll(force) {
+        if (force || ((!autoScrollCb || autoScrollCb.checked) && isNearBottom())) {
+            chatLog.scrollTop = chatLog.scrollHeight;
+            clearUnread();
+        }
+    }
+    if (unreadPill) {
+        unreadPill.addEventListener('click', function () {
+            chatLog.scrollTop = chatLog.scrollHeight;
+            clearUnread();
+        });
+    }
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden && isNearBottom()) clearUnread();
+    });
+
+    function jumpToMessage(id) {
+        const target = chatLog.querySelector('.message[data-mid="' + id + '"]');
+        if (!target) return;
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.remove('highlight-flash');
+        void target.offsetWidth;
+        target.classList.add('highlight-flash');
+    }
+
     function formatTime(d) {
         return d.toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
     }
@@ -286,9 +791,6 @@
             day: 'numeric', month: 'long', year: 'numeric',
         });
     }
-    // Recompute the "day changed" separators between consecutive messages.
-    // Idempotent: cheap enough for our page sizes, and safe to call after
-    // any batch mutation (append, prepend, catch-up, deletion).
     function renderDaySeparators() {
         chatLog.querySelectorAll('.day-sep').forEach(function (n) { n.remove(); });
         let prevDate = null;
@@ -305,66 +807,164 @@
     }
     function setStatus(text, cls, icon) {
         connectionStatus.className = 'badge ' + cls;
-        connectionStatus.innerHTML = '';
+        connectionStatus.replaceChildren();
         const i = document.createElement('i'); i.className = 'bi ' + icon;
         connectionStatus.appendChild(i);
         connectionStatus.appendChild(document.createTextNode(' ' + text));
     }
 
-    // Build a message node WITHOUT innerHTML on user data (XSS-safe).
+    // ---- reactions rendering ----------------------------------------------
+    function renderReactionsOnNode(node, reactions) {
+        const bar = node.querySelector('.reactions-bar');
+        if (!bar) return;
+        bar.replaceChildren();
+        const mid = parseInt(node.dataset.mid, 10);
+        (reactions || []).forEach(function (r) {
+            if (!r.count) return;
+            const pill = document.createElement('button');
+            pill.type = 'button';
+            const myReact = Array.isArray(r.users) && r.users.indexOf(userName) !== -1;
+            pill.className = 'reaction-pill' + (myReact ? ' active' : '');
+            pill.title = (r.users || []).join(', ');
+            pill.textContent = r.emoji + ' ' + r.count;
+            pill.addEventListener('click', function () {
+                send({ type: 'react_message', id: mid, emoji: r.emoji });
+            });
+            bar.appendChild(pill);
+        });
+    }
+
+    // Hydrate server-rendered messages on initial load
+    chatLog.querySelectorAll('.message[data-mid]').forEach(function (node) {
+        const av = node.querySelector('.user-avatar[data-avatar-user]');
+        if (av) av.style.background = avatarColor(av.dataset.avatarUser);
+        const contentEl = node.querySelector('.message-content');
+        if (contentEl) {
+            const isAct = renderRichText(contentEl, node.dataset.raw || contentEl.textContent);
+            if (isAct) node.classList.add('action-message');
+        }
+        try {
+            const rx = JSON.parse(node.dataset.reactions || '[]');
+            renderReactionsOnNode(node, rx);
+        } catch (e) {}
+    });
+
+    // ---- Build message DOM node (XSS-safe) --------------------------------
     function buildMessageNode(data) {
         const el = document.createElement('div');
-        el.className = 'message';
+        const isSystem = data.type === 'user_join' || data.type === 'user_leave' ||
+                         data.type === 'video_notification' || data.type === 'video_call_request';
+        el.className = 'message' + (data.username === userName && !isSystem ? ' own-message' : '');
         if (data.id != null) el.dataset.mid = data.id;
+        el.dataset.username = data.username || '';
+        el.dataset.raw = data.message || '';
+        el.dataset.pinned = data.is_pinned ? 'true' : 'false';
         el.dataset.date = data.iso ? data.iso.slice(0, 10) : localDateStr(new Date());
 
         let messageClass = '';
-        let icon = 'bi-person-circle text-primary';
-        if (data.type === 'user_join') { messageClass = 'text-success'; icon = 'bi-person-plus text-success'; }
-        else if (data.type === 'user_leave') { messageClass = 'text-warning'; icon = 'bi-person-dash text-warning'; }
+        let specialIcon = null;
+        if (data.type === 'user_join') { messageClass = 'text-success'; specialIcon = 'bi-person-plus'; }
+        else if (data.type === 'user_leave') { messageClass = 'text-warning'; specialIcon = 'bi-person-dash'; }
         else if (data.type === 'video_notification' || data.type === 'video_call_request') {
-            messageClass = ''; icon = 'bi-camera-video'; el.classList.add('video-notification');
+            specialIcon = 'bi-camera-video'; el.classList.add('video-notification');
         }
 
         const wrapper = document.createElement('div');
-        wrapper.className = 'd-flex align-items-start';
+        wrapper.className = 'd-flex align-items-start gap-2';
 
-        const avatar = document.createElement('div');
-        avatar.className = 'avatar me-2';
-        const iconEl = document.createElement('i');
-        iconEl.className = 'bi ' + icon; iconEl.style.fontSize = '1.5rem';
-        avatar.appendChild(iconEl);
+        const avatar = makeAvatarNode(data.username, specialIcon);
 
         const body = document.createElement('div');
-        body.className = 'flex-grow-1';
+        body.className = 'flex-grow-1 min-w-0';
 
         const header = document.createElement('div');
-        header.className = 'd-flex align-items-center mb-1';
+        header.className = 'd-flex align-items-center flex-wrap gap-1 mb-1';
         const nameEl = document.createElement('strong');
-        nameEl.className = 'me-2 ' + messageClass;
+        nameEl.className = 'me-1 ' + messageClass;
         nameEl.textContent = data.username || '';
         const timeEl = document.createElement('small');
         timeEl.className = 'text-body-secondary';
         timeEl.textContent = data.iso ? formatTime(new Date(data.iso))
                                       : (data.timestamp || formatTime(new Date()));
-        header.append(nameEl, timeEl);
-        const deletable = data.id != null && data.username === userName &&
-            (data.type === undefined || data.type === 'message');
-        if (deletable) {
-            const del = document.createElement('button');
-            del.type = 'button'; del.className = 'msg-del ms-1';
-            del.title = 'Șterge mesajul'; del.setAttribute('aria-label', 'Șterge mesajul');
-            del.innerHTML = '&times;';
-            header.appendChild(del);
+
+        const editedEl = document.createElement('small');
+        editedEl.className = 'text-body-secondary fst-italic edited-tag' + (data.edited ? '' : ' d-none');
+        editedEl.textContent = '(editat)';
+
+        const pinEl = document.createElement('i');
+        pinEl.className = 'bi bi-pin-angle-fill text-warning small pin-tag' + (data.is_pinned ? '' : ' d-none');
+        pinEl.title = 'Mesaj fixat';
+
+        header.append(nameEl, timeEl, editedEl, pinEl);
+
+        if (data.id != null && !isSystem && isAuthenticated) {
+            const actions = document.createElement('span');
+            actions.className = 'msg-actions ms-auto';
+
+            const replyBtn = document.createElement('button');
+            replyBtn.type = 'button'; replyBtn.className = 'msg-action-btn msg-reply-btn';
+            replyBtn.title = 'Răspunde'; replyBtn.innerHTML = '<i class="bi bi-reply"></i>';
+            actions.appendChild(replyBtn);
+
+            const reactBtn = document.createElement('button');
+            reactBtn.type = 'button'; reactBtn.className = 'msg-action-btn msg-react-btn';
+            reactBtn.title = 'Reacționează'; reactBtn.innerHTML = '<i class="bi bi-emoji-smile"></i>';
+            actions.appendChild(reactBtn);
+
+            if (data.username === userName) {
+                const editBtn = document.createElement('button');
+                editBtn.type = 'button'; editBtn.className = 'msg-action-btn msg-edit-btn';
+                editBtn.title = 'Editează mesajul'; editBtn.innerHTML = '<i class="bi bi-pencil"></i>';
+                actions.appendChild(editBtn);
+            }
+            if (isRoomOwnerOrStaff) {
+                const pinBtn = document.createElement('button');
+                pinBtn.type = 'button'; pinBtn.className = 'msg-action-btn msg-pin-btn';
+                pinBtn.title = 'Fixează / eliberează mesajul'; pinBtn.innerHTML = '<i class="bi bi-pin-angle"></i>';
+                actions.appendChild(pinBtn);
+            }
+            if (data.username === userName) {
+                const del = document.createElement('button');
+                del.type = 'button'; del.className = 'msg-del';
+                del.title = 'Șterge mesajul'; del.setAttribute('aria-label', 'Șterge mesajul');
+                del.innerHTML = '&times;';
+                actions.appendChild(del);
+            }
+            header.appendChild(actions);
+        }
+
+        body.appendChild(header);
+
+        if (data.reply_to && data.reply_to.id) {
+            const rq = document.createElement('div');
+            rq.className = 'reply-quote';
+            rq.dataset.jumpId = data.reply_to.id;
+            const rqIcon = document.createElement('i');
+            rqIcon.className = 'bi bi-reply-fill';
+            const rqUser = document.createElement('strong');
+            rqUser.textContent = '@' + (data.reply_to.username || '') + ':';
+            const rqText = document.createElement('span');
+            rqText.className = 'text-truncate';
+            rqText.textContent = data.reply_to.message || '';
+            rq.append(rqIcon, rqUser, rqText);
+            body.appendChild(rq);
         }
 
         const content = document.createElement('div');
         content.className = 'message-content';
-        content.textContent = data.message || '';
+        const isAct = renderRichText(content, data.message || '');
+        if (isAct) el.classList.add('action-message');
 
-        body.append(header, content);
+        const reactionsBar = document.createElement('div');
+        reactionsBar.className = 'reactions-bar';
+
+        body.append(content, reactionsBar);
         wrapper.append(avatar, body);
         el.appendChild(wrapper);
+
+        if (data.reactions && data.reactions.length) {
+            renderReactionsOnNode(el, data.reactions);
+        }
         return el;
     }
 
@@ -374,55 +974,88 @@
             if (document.querySelector('.message[data-mid="' + data.id + '"]')) return;
             if (data.id > latestId) latestId = data.id;
         }
+        const wasNearBottom = isNearBottom();
         const node = buildMessageNode(data);
         chatLog.appendChild(node);
         renderDaySeparators();
-        if (!opts.silent) autoScroll();
-        if (!opts.silent && data.username !== userName && data.type !== 'user_join' && data.type !== 'user_leave') {
-            playBeep();
-            maybeNotify(data);
+
+        const isOtherUserMsg = data.username !== userName &&
+            data.type !== 'user_join' && data.type !== 'user_leave';
+
+        if (!opts.silent) {
+            if (wasNearBottom || data.username === userName) {
+                autoScroll(true);
+            } else if (isOtherUserMsg) {
+                unreadCount++;
+                if (unreadPill && unreadPillText) {
+                    unreadPillText.textContent = unreadCount + (unreadCount === 1 ? ' mesaj nou' : ' mesaje noi');
+                    unreadPill.classList.remove('d-none');
+                }
+            }
+            if (isOtherUserMsg) {
+                if (document.hidden) {
+                    unreadCount = Math.max(1, unreadCount);
+                    document.title = '(' + unreadCount + ') ' + baseTitle;
+                }
+                const mentionedMe = String(data.message || '').indexOf('@' + userName) !== -1;
+                playBeep(mentionedMe ? 880 : 660);
+                maybeNotify(data, mentionedMe);
+            }
         }
     }
 
     // ---- sound + desktop notifications -----------------------------------
     let audioCtx = null;
-    function playBeep() {
+    function playBeep(freq) {
         if (!soundCb || !soundCb.checked) return;
         try {
             audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
             const osc = audioCtx.createOscillator();
             const gain = audioCtx.createGain();
             osc.connect(gain); gain.connect(audioCtx.destination);
-            osc.frequency.value = 660; osc.type = 'sine';
+            osc.frequency.value = freq || 660; osc.type = 'sine';
             gain.gain.setValueAtTime(0.001, audioCtx.currentTime);
             gain.gain.exponentialRampToValueAtTime(0.15, audioCtx.currentTime + 0.01);
-            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.2);
-            osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.22);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.22);
         } catch (e) {}
     }
-    function maybeNotify(data) {
+    function maybeNotify(data, mentionedMe) {
         if (!desktopCb || !desktopCb.checked) return;
         if (!('Notification' in window) || Notification.permission !== 'granted') return;
-        if (!document.hidden) return;
-        try { new Notification('#' + roomName + ' · ' + data.username, { body: data.message || '' }); } catch (e) {}
+        if (!document.hidden && !mentionedMe) return;
+        try {
+            const title = (mentionedMe ? '🔔 Te-a menționat în #' : '#') + roomName + ' · ' + data.username;
+            new Notification(title, { body: data.message || '' });
+        } catch (e) {}
     }
 
     // ---- presence + typing ------------------------------------------------
     function updatePresence(data) {
         const users = data.users || [];
+        onlineUsersList = users;
         userCountBadge.textContent = users.length + ' online';
         onlineCount.textContent = users.length;
+        if (mobileOnlineCount) mobileOnlineCount.textContent = users.length;
         userList.replaceChildren();
         users.forEach(function (u) {
             const li = document.createElement('li');
-            li.className = 'list-group-item bg-transparent d-flex align-items-center gap-2';
+            li.className = 'list-group-item bg-transparent d-flex align-items-center gap-2 py-2';
+            li.style.cursor = 'pointer';
             const dot = document.createElement('span'); dot.className = 'online-dot';
+            const av = makeAvatarNode(u);
+            av.style.width = '26px'; av.style.height = '26px'; av.style.fontSize = '.72rem';
             const name = document.createElement('span');
+            name.className = 'text-truncate';
             name.textContent = u + (u === userName ? ' (tu)' : '');
-            li.append(dot, name);
+            li.append(dot, av, name);
+            li.addEventListener('click', function () {
+                if (!messageInput) return;
+                messageInput.value += (messageInput.value && !messageInput.value.endsWith(' ') ? ' ' : '') + '@' + u + ' ';
+                messageInput.focus();
+            });
             userList.appendChild(li);
         });
-        // A peer whose user left the room can no longer be in the call.
         peers.forEach(function (st, peerId) {
             if (users.indexOf(st.username) === -1) closePeer(peerId);
         });
@@ -449,6 +1082,71 @@
         renderTyping();
     }
 
+    // ---- live message mutations (edit, react, pin, delete) ----------------
+    function handleMessageEdited(data) {
+        const node = chatLog.querySelector('.message[data-mid="' + data.id + '"]');
+        if (!node) return;
+        node.dataset.raw = data.message || '';
+        const contentEl = node.querySelector('.message-content');
+        if (contentEl) {
+            const isAct = renderRichText(contentEl, data.message || '');
+            node.classList.toggle('action-message', isAct);
+        }
+        const editedTag = node.querySelector('.edited-tag');
+        if (editedTag) editedTag.classList.remove('d-none');
+    }
+
+    function handleMessageReactions(data) {
+        const node = chatLog.querySelector('.message[data-mid="' + data.id + '"]');
+        if (!node) return;
+        renderReactionsOnNode(node, data.reactions || []);
+    }
+
+    function syncPinnedCount() {
+        const count = pinnedList ? pinnedList.querySelectorAll('.pinned-item').length : 0;
+        if (pinnedCountBadge) pinnedCountBadge.textContent = String(count);
+        if (pinnedPanel && count === 0) pinnedPanel.classList.add('d-none');
+    }
+
+    function handleMessagePinned(data) {
+        const node = chatLog.querySelector('.message[data-mid="' + data.id + '"]');
+        if (node) {
+            node.dataset.pinned = data.is_pinned ? 'true' : 'false';
+            const pinTag = node.querySelector('.pin-tag');
+            if (pinTag) pinTag.classList.toggle('d-none', !data.is_pinned);
+        }
+        if (!pinnedList) return;
+        const existing = pinnedList.querySelector('.pinned-item[data-pin-id="' + data.id + '"]');
+        if (existing) existing.remove();
+        if (data.is_pinned) {
+            const item = document.createElement('div');
+            item.className = 'd-flex align-items-center justify-content-between gap-2 px-2 py-1 rounded bg-body-tertiary pinned-item';
+            item.dataset.pinId = data.id;
+            const textWrap = document.createElement('div');
+            textWrap.className = 'text-truncate';
+            textWrap.setAttribute('role', 'button');
+            textWrap.dataset.jumpId = data.id;
+            const uEl = document.createElement('strong');
+            uEl.textContent = (data.username || '') + ': ';
+            const mEl = document.createElement('span');
+            mEl.textContent = data.message || '';
+            textWrap.append(uEl, mEl);
+            item.appendChild(textWrap);
+            if (isRoomOwnerOrStaff) {
+                const unpin = document.createElement('button');
+                unpin.type = 'button';
+                unpin.className = 'btn btn-sm btn-link text-danger p-0 unpin-btn';
+                unpin.dataset.pinId = data.id;
+                unpin.title = 'Anulează fixarea';
+                unpin.innerHTML = '&times;';
+                item.appendChild(unpin);
+            }
+            pinnedList.prepend(item);
+            if (pinnedPanel) pinnedPanel.classList.remove('d-none');
+        }
+        syncPinnedCount();
+    }
+
     // ---- WebSocket with auto-reconnect -----------------------------------
     let socket = null;
     let reconnectDelay = 1000;
@@ -466,7 +1164,7 @@
         socket.onopen = function () {
             reconnectDelay = 1000;
             setStatus('Conectat', 'text-bg-success', 'bi-wifi');
-            if (hadConnection) catchUpHistory();  // backfill the offline gap
+            if (hadConnection) catchUpHistory();
             hadConnection = true;
         };
         socket.onmessage = function (e) {
@@ -477,7 +1175,15 @@
                     setCallBadge(data.call_count);
                     break;
                 case 'message': addMessage(data); break;
+                case 'message_edited': handleMessageEdited(data); break;
+                case 'message_reactions': handleMessageReactions(data); break;
+                case 'message_pinned': handleMessagePinned(data); break;
                 case 'message_deleted': removeMessage(data.id); break;
+                case 'member_kicked':
+                    stopped = true;
+                    showError(data.error || 'Ai fost eliminat din cameră.');
+                    setTimeout(function () { window.location.href = '/'; }, 1800);
+                    break;
                 case 'room_deleted':
                     stopped = true;
                     showError('Camera a fost ștearsă de proprietar. Te redirecționăm…');
@@ -511,8 +1217,6 @@
             }
         };
         socket.onclose = function (e) {
-            // Our peer id (and the server-side call membership) died with the
-            // socket; signalling for existing connections is gone. Start clean.
             if (inCall) teardownCall();
             if (e.code === 4401) { setStatus('Neautentificat', 'text-bg-danger', 'bi-shield-lock'); return; }
             if (e.code === 4403) { setStatus('Acces interzis', 'text-bg-danger', 'bi-lock'); return; }
@@ -527,10 +1231,7 @@
 
     function shutdownSocket() { stopped = true; if (socket) try { socket.close(); } catch (e) {} }
     window.addEventListener('beforeunload', shutdownSocket);
-    // Mobile browsers often skip beforeunload; pagehide is the reliable one.
     window.addEventListener('pagehide', shutdownSocket);
-    // Restored from the back/forward cache: the socket was closed on the way
-    // out, so start a fresh connection (which also backfills history).
     window.addEventListener('pageshow', function (e) {
         if (e.persisted) { stopped = false; connect(); }
     });
@@ -540,17 +1241,113 @@
         alert.className = 'alert alert-danger py-1 px-2 small mb-2';
         alert.textContent = msg || 'Eroare';
         chatLog.appendChild(alert);
-        autoScroll();
-        setTimeout(function () { alert.remove(); }, 4000);
+        autoScroll(true);
+        setTimeout(function () { alert.remove(); }, 4500);
     }
 
-    // ---- sending ----------------------------------------------------------
+    function showLocalHelp() {
+        const box = document.createElement('div');
+        box.className = 'alert alert-secondary py-2 px-3 small mb-2';
+        box.textContent = 'Comenzi disponibile: /shrug [text], /me <acțiune>, /roll [NdM], /clear (curăță ecranul), /help. ' +
+            'Scurtături: săgeată-sus (↑) în câmpul gol editează ultimul tău mesaj; Esc anulează răspunsul sau editarea; @nume menționează un participant.';
+        chatLog.appendChild(box);
+        autoScroll(true);
+    }
+
+    // ---- Reply & Edit compose context -------------------------------------
+    function startReply(mid, username, snippet) {
+        activeEditId = null;
+        activeReplyId = mid;
+        if (composeContextBar) {
+            composeContextIcon.className = 'bi bi-reply-fill text-primary me-1';
+            composeContextLabel.textContent = 'Răspunzi lui @' + username + ':';
+            composeContextText.textContent = (snippet || '').slice(0, 90);
+            composeContextBar.classList.remove('d-none');
+        }
+        if (messageInput) messageInput.focus();
+    }
+
+    function startEdit(mid, rawContent) {
+        activeReplyId = null;
+        activeEditId = mid;
+        if (composeContextBar) {
+            composeContextIcon.className = 'bi bi-pencil-square text-warning me-1';
+            composeContextLabel.textContent = 'Editezi mesajul:';
+            composeContextText.textContent = (rawContent || '').slice(0, 90);
+            composeContextBar.classList.remove('d-none');
+        }
+        if (messageInput) {
+            messageInput.value = rawContent || '';
+            messageInput.focus();
+        }
+    }
+
+    function clearComposeContext() {
+        const wasEditing = activeEditId !== null;
+        activeReplyId = null;
+        activeEditId = null;
+        if (composeContextBar) composeContextBar.classList.add('d-none');
+        if (wasEditing && messageInput) messageInput.value = '';
+    }
+    if (cancelComposeContext) cancelComposeContext.addEventListener('click', clearComposeContext);
+
+    // ---- Slash commands & sending -----------------------------------------
+    function processSlashCommand(text) {
+        if (text === '/help') {
+            showLocalHelp();
+            return null;
+        }
+        if (text === '/clear') {
+            chatLog.replaceChildren();
+            return null;
+        }
+        if (text === '/shrug' || text.startsWith('/shrug ')) {
+            const rest = text.slice(6).trim();
+            return (rest ? rest + ' ' : '') + '¯\\_(ツ)_/¯';
+        }
+        if (text === '/roll' || text.startsWith('/roll ')) {
+            const arg = text.slice(5).trim();
+            const m = /^(\d{1,2})d(\d{1,3})$/i.exec(arg);
+            const count = m ? Math.min(Math.max(parseInt(m[1], 10), 1), 10) : 1;
+            const sides = m ? Math.min(Math.max(parseInt(m[2], 10), 2), 100) : 6;
+            let total = 0;
+            const rolls = [];
+            for (let i = 0; i < count; i++) {
+                const r = Math.floor(Math.random() * sides) + 1;
+                rolls.push(r); total += r;
+            }
+            return '/me 🎲 a dat cu zarul (' + count + 'd' + sides + '): ' +
+                (count > 1 ? rolls.join(' + ') + ' = ' + total : total);
+        }
+        return text;
+    }
+
     function sendMessage() {
-        if (!isAuthenticated) return;
-        const message = messageInput.value.trim();
-        if (!message) return;
-        send({ message: message });
+        if (!isAuthenticated || !messageInput) return;
+        const raw = messageInput.value.trim();
+        if (!raw) return;
+
+        if (activeEditId !== null) {
+            send({ type: 'edit_message', id: activeEditId, message: raw });
+            clearComposeContext();
+            messageInput.value = '';
+            sendTyping(false);
+            return;
+        }
+
+        const processed = processSlashCommand(raw);
         messageInput.value = '';
+        hideMentionSuggest();
+        if (processed === null) {
+            clearComposeContext();
+            sendTyping(false);
+            return;
+        }
+
+        const payload = { message: processed };
+        if (activeReplyId !== null) payload.reply_to = activeReplyId;
+        send(payload);
+        clearComposeContext();
         sendTyping(false);
     }
 
@@ -569,20 +1366,71 @@
         }
     }
 
+    // ---- @username autocomplete -------------------------------------------
+    function hideMentionSuggest() {
+        if (mentionSuggestBar) {
+            mentionSuggestBar.classList.add('d-none');
+            mentionSuggestBar.replaceChildren();
+        }
+    }
+    function updateMentionSuggest() {
+        if (!messageInput || !mentionSuggestBar) return;
+        const val = messageInput.value;
+        const m = /(?:^|\s)@([A-Za-z0-9_.-]*)$/.exec(val);
+        if (!m) { hideMentionSuggest(); return; }
+        const query = m[1].toLowerCase();
+        const matches = onlineUsersList.filter(function (u) {
+            return u.toLowerCase().indexOf(query) === 0;
+        }).slice(0, 6);
+        if (!matches.length) { hideMentionSuggest(); return; }
+        mentionSuggestBar.replaceChildren();
+        matches.forEach(function (u) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-sm btn-outline-primary py-0 px-2';
+            btn.textContent = '@' + u;
+            btn.addEventListener('click', function () {
+                messageInput.value = val.replace(/@([A-Za-z0-9_.-]*)$/, '@' + u + ' ');
+                hideMentionSuggest();
+                messageInput.focus();
+            });
+            mentionSuggestBar.appendChild(btn);
+        });
+        mentionSuggestBar.classList.remove('d-none');
+    }
+
     if (messageSubmit) messageSubmit.addEventListener('click', sendMessage);
     if (messageInput) {
         messageInput.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            } else if (e.key === 'Escape') {
+                clearComposeContext();
+                hideMentionSuggest();
+            } else if (e.key === 'Tab' && mentionSuggestBar && !mentionSuggestBar.classList.contains('d-none')) {
+                const firstBtn = mentionSuggestBar.querySelector('button');
+                if (firstBtn) { e.preventDefault(); firstBtn.click(); }
+            } else if (e.key === 'ArrowUp' && !messageInput.value.trim()) {
+                // Edit your most recent message on ArrowUp in empty input
+                const ownNodes = chatLog.querySelectorAll('.message.own-message[data-mid]');
+                if (ownNodes.length) {
+                    const last = ownNodes[ownNodes.length - 1];
+                    e.preventDefault();
+                    startEdit(parseInt(last.dataset.mid, 10), last.dataset.raw || '');
+                }
+            }
         });
-        messageInput.addEventListener('input', function () { sendTyping(true); });
-        // Autofocus pops the keyboard and shoves the layout around on phones;
-        // only grab focus where a physical keyboard is the norm.
+        messageInput.addEventListener('input', function () {
+            sendTyping(true);
+            updateMentionSuggest();
+        });
         if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
             messageInput.focus();
         }
     }
 
-    // ---- emoji ------------------------------------------------------------
+    // ---- emoji picker -----------------------------------------------------
     const emojiBtn = document.getElementById('emojiBtn');
     const emojiPanel = document.getElementById('emojiPanel');
     if (emojiBtn && emojiPanel) {
@@ -612,7 +1460,6 @@
         if (nodes.length >= 30) loadMoreWrap.classList.remove('d-none');
     })();
 
-    // After a reconnect, fill in whatever was said while we were offline.
     let catchingUp = false;
     async function catchUpHistory() {
         if (catchingUp || !latestId) return;
@@ -666,22 +1513,151 @@
     if (loadMoreBtn) loadMoreBtn.addEventListener('click', loadMore);
     chatLog.addEventListener('scroll', function () {
         if (chatLog.scrollTop < 40 && !loadMoreWrap.classList.contains('d-none')) loadMore();
+        if (isNearBottom()) clearUnread();
     });
 
-    // ---- deleting own messages --------------------------------------------
+    // ---- message actions delegation (reply, react, edit, pin, delete) -----
     function removeMessage(id) {
         if (id == null) return;
         const node = chatLog.querySelector('.message[data-mid="' + id + '"]');
         if (node) { node.remove(); renderDaySeparators(); }
+        if (pinnedList) {
+            const p = pinnedList.querySelector('.pinned-item[data-pin-id="' + id + '"]');
+            if (p) { p.remove(); syncPinnedCount(); }
+        }
     }
+
+    function toggleQuickReactionPicker(node, mid) {
+        const existing = node.querySelector('.quick-react-picker');
+        if (existing) { existing.remove(); return; }
+        chatLog.querySelectorAll('.quick-react-picker').forEach(function (p) { p.remove(); });
+        const picker = document.createElement('div');
+        picker.className = 'quick-react-picker';
+        ALLOWED_REACTIONS.forEach(function (em) {
+            const b = document.createElement('button');
+            b.type = 'button'; b.textContent = em;
+            b.addEventListener('click', function () {
+                send({ type: 'react_message', id: mid, emoji: em });
+                picker.remove();
+            });
+            picker.appendChild(b);
+        });
+        const body = node.querySelector('.flex-grow-1');
+        if (body) body.appendChild(picker);
+    }
+
     chatLog.addEventListener('click', function (e) {
-        const btn = e.target.closest('.msg-del');
-        if (!btn) return;
-        const node = btn.closest('.message[data-mid]');
+        const jumpEl = e.target.closest('[data-jump-id]');
+        if (jumpEl) {
+            jumpToMessage(jumpEl.dataset.jumpId);
+            return;
+        }
+        const node = e.target.closest('.message[data-mid]');
         if (!node) return;
-        if (!window.confirm('Ștergi acest mesaj pentru toată lumea?')) return;
-        send({ type: 'delete_message', id: parseInt(node.dataset.mid, 10) });
+        const mid = parseInt(node.dataset.mid, 10);
+
+        if (e.target.closest('.msg-del')) {
+            if (!window.confirm('Ștergi acest mesaj pentru toată lumea?')) return;
+            send({ type: 'delete_message', id: mid });
+        } else if (e.target.closest('.msg-reply-btn')) {
+            startReply(mid, node.dataset.username || '', node.dataset.raw || '');
+        } else if (e.target.closest('.msg-edit-btn')) {
+            startEdit(mid, node.dataset.raw || '');
+        } else if (e.target.closest('.msg-react-btn')) {
+            toggleQuickReactionPicker(node, mid);
+        } else if (e.target.closest('.msg-pin-btn')) {
+            send({ type: 'pin_message', id: mid });
+        }
     });
+
+    // ---- pinned messages panel controls -----------------------------------
+    const togglePinnedBtn = document.getElementById('togglePinnedBtn');
+    const hidePinnedBtn = document.getElementById('hidePinnedBtn');
+    if (togglePinnedBtn && pinnedPanel) {
+        togglePinnedBtn.addEventListener('click', function () {
+            pinnedPanel.classList.toggle('d-none');
+        });
+    }
+    if (hidePinnedBtn && pinnedPanel) {
+        hidePinnedBtn.addEventListener('click', function () {
+            pinnedPanel.classList.add('d-none');
+        });
+    }
+    if (pinnedList) {
+        pinnedList.addEventListener('click', function (e) {
+            const unpinBtn = e.target.closest('.unpin-btn');
+            if (unpinBtn) {
+                send({ type: 'pin_message', id: parseInt(unpinBtn.dataset.pinId, 10) });
+                return;
+            }
+            const jump = e.target.closest('[data-jump-id]');
+            if (jump) jumpToMessage(jump.dataset.jumpId);
+        });
+    }
+
+    // ---- in-room search ---------------------------------------------------
+    const toggleSearchBtn = document.getElementById('toggleSearchBtn');
+    const closeSearchBtn = document.getElementById('closeSearchBtn');
+    const searchPanel = document.getElementById('searchPanel');
+    const roomSearchInput = document.getElementById('roomSearchInput');
+    const searchResults = document.getElementById('searchResults');
+    let searchTimer = null;
+
+    if (toggleSearchBtn && searchPanel) {
+        toggleSearchBtn.addEventListener('click', function () {
+            searchPanel.classList.toggle('d-none');
+            if (!searchPanel.classList.contains('d-none') && roomSearchInput) roomSearchInput.focus();
+        });
+    }
+    if (closeSearchBtn && searchPanel) {
+        closeSearchBtn.addEventListener('click', function () {
+            searchPanel.classList.add('d-none');
+            if (searchResults) searchResults.replaceChildren();
+        });
+    }
+    if (roomSearchInput && searchResults) {
+        roomSearchInput.addEventListener('input', function () {
+            clearTimeout(searchTimer);
+            const q = roomSearchInput.value.trim();
+            if (q.length < 2) { searchResults.replaceChildren(); return; }
+            searchTimer = setTimeout(async function () {
+                try {
+                    const r = await fetch(searchUrl + '?q=' + encodeURIComponent(q), {
+                        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    });
+                    if (!r.ok) return;
+                    const data = await r.json();
+                    searchResults.replaceChildren();
+                    const list = data.messages || [];
+                    if (!list.length) {
+                        const empty = document.createElement('div');
+                        empty.className = 'text-body-secondary py-1';
+                        empty.textContent = 'Niciun rezultat găsit.';
+                        searchResults.appendChild(empty);
+                        return;
+                    }
+                    list.forEach(function (m) {
+                        const row = document.createElement('div');
+                        row.className = 'p-1 rounded border-bottom d-flex justify-content-between align-items-center gap-2';
+                        row.style.cursor = 'pointer';
+                        const left = document.createElement('div');
+                        left.className = 'text-truncate';
+                        const u = document.createElement('strong');
+                        u.textContent = m.username + ': ';
+                        const txt = document.createElement('span');
+                        txt.textContent = m.message;
+                        left.append(u, txt);
+                        const ts = document.createElement('small');
+                        ts.className = 'text-body-secondary flex-shrink-0';
+                        ts.textContent = m.timestamp;
+                        row.append(left, ts);
+                        row.addEventListener('click', function () { jumpToMessage(m.id); });
+                        searchResults.appendChild(row);
+                    });
+                } catch (e) {}
+            }, 250);
+        });
+    }
 
     // ---- WebRTC mesh (N peers, perfect negotiation per connection) --------
     const localVideo = document.getElementById('localVideo');
@@ -691,6 +1667,7 @@
     const toggleAudioBtn = document.getElementById('toggleAudio');
     const toggleVideoCameraBtn = document.getElementById('toggleVideoCamera');
     const toggleScreenBtn = document.getElementById('toggleScreen');
+    const fullscreenLocalBtn = document.getElementById('fullscreenLocal');
     const videoStatus = document.getElementById('videoStatus');
     const callCount = document.getElementById('callCount');
 
@@ -699,11 +1676,22 @@
     ]};
     let localStream = null;
     let inCall = false;
-    let myPeerId = null;   // per-connection id assigned by the server (welcome)
-    let screenTrack = null;  // active screen-share video track, if any
-    let wakeLock = null;     // keeps the phone screen on during a call
-    // remote peerId -> { pc, username, makingOffer, ignoreOffer, polite }
+    let myPeerId = null;
+    let screenTrack = null;
+    let wakeLock = null;
     const peers = new Map();
+
+    function toggleFullscreen(elem) {
+        if (!elem) return;
+        if (document.fullscreenElement) {
+            document.exitFullscreen().catch(function () {});
+        } else if (elem.requestFullscreen) {
+            elem.requestFullscreen().catch(function () {});
+        }
+    }
+    if (fullscreenLocalBtn) {
+        fullscreenLocalBtn.addEventListener('click', function () { toggleFullscreen(localTile); });
+    }
 
     async function loadIceConfig() {
         try {
@@ -713,12 +1701,10 @@
                 if (j.iceServers && j.iceServers.length) iceConfig = { iceServers: j.iceServers };
                 if (j.iceTransportPolicy) iceConfig.iceTransportPolicy = j.iceTransportPolicy;
             }
-        } catch (e) { /* fall back to the default STUN config */ }
+        } catch (e) {}
     }
 
     function signalTo(to, kind, payload) { send({ type: 'webrtc_signal', to: to, kind: kind, payload: payload }); }
-
-    // Peer ids are server-generated hex, safe to embed in element ids directly.
     function tileId(peerId) { return 'tile-' + peerId; }
 
     function ensureRemoteTile(peerId, username) {
@@ -732,8 +1718,14 @@
         const label = document.createElement('div');
         label.className = 'video-label';
         const span = document.createElement('span');
-        span.textContent = username;        // textContent -> XSS-safe
-        label.appendChild(span);
+        span.textContent = username;
+        const fsBtn = document.createElement('button');
+        fsBtn.type = 'button';
+        fsBtn.className = 'btn btn-sm btn-light';
+        fsBtn.title = 'Ecran complet';
+        fsBtn.innerHTML = '<i class="bi bi-arrows-fullscreen"></i>';
+        fsBtn.addEventListener('click', function () { toggleFullscreen(tile); });
+        label.append(span, fsBtn);
         tile.append(v, label);
         videoGrid.appendChild(tile);
         return v;
@@ -744,20 +1736,17 @@
         if (tile) tile.remove();
     }
 
-    // The badge shows the server-provided participant count when we have one.
     function setCallBadge(count) {
         if (typeof count === 'number') callCount.textContent = String(count);
     }
 
     function createPeer(remotePeerId, username) {
-        // Deterministic politeness avoids a glare deadlock when both sides offer.
         const polite = myPeerId < remotePeerId;
         const pc = new RTCPeerConnection(iceConfig);
         const state = { pc: pc, username: username, makingOffer: false, ignoreOffer: false, polite: polite };
         peers.set(remotePeerId, state);
 
         if (localStream) localStream.getTracks().forEach(function (t) {
-            // If we are mid screen-share, new peers get the screen, not the camera.
             const track = (t.kind === 'video' && screenTrack) ? screenTrack : t;
             pc.addTrack(track, localStream);
         });
@@ -784,7 +1773,7 @@
     }
 
     async function handleSignal(data) {
-        if (!inCall) return;                // ignore stray signals when not in a call
+        if (!inCall) return;
         const remote = data.from_peer;
         const st = peers.get(remote) || createPeer(remote, data.from_user);
         const pc = st.pc;
@@ -817,11 +1806,9 @@
         inCall = true;
         updateCallUI();
         requestWakeLock();
-        // Existing call members reply with `call_present`; then we offer to them.
         send({ type: 'call_join' });
     }
 
-    // Local teardown shared by voluntary leave and server-side denial.
     function teardownCall() {
         inCall = false;
         peers.forEach(function (st, peerId) { try { st.pc.close(); } catch (e) {} removeRemoteTile(peerId); });
@@ -834,7 +1821,6 @@
         updateCallUI();
     }
 
-    // ---- screen sharing ----------------------------------------------------
     function replaceOutgoingVideo(track) {
         peers.forEach(function (st) {
             const sender = st.pc.getSenders().find(function (s) {
@@ -848,7 +1834,6 @@
         if (!toggleScreenBtn) return;
         toggleScreenBtn.className = 'btn btn-sm ' + (screenTrack ? 'btn-danger' : 'btn-light');
         toggleScreenBtn.title = screenTrack ? 'Oprește partajarea' : 'Partajează ecranul';
-        // The camera preview is mirrored; a shared screen must not be.
         localVideo.style.transform = screenTrack ? 'none' : '';
     }
 
@@ -857,9 +1842,9 @@
         let stream;
         try {
             stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        } catch (e) { return; }  // user dismissed the picker
+        } catch (e) { return; }
         screenTrack = stream.getVideoTracks()[0];
-        screenTrack.addEventListener('ended', stopScreenShare); // browser "Stop sharing" bar
+        screenTrack.addEventListener('ended', stopScreenShare);
         replaceOutgoingVideo(screenTrack);
         localVideo.srcObject = stream;
         updateScreenUI();
@@ -875,7 +1860,6 @@
         updateScreenUI();
     }
 
-    // ---- wake lock (keep the screen on while in a call) --------------------
     async function requestWakeLock() {
         if (!('wakeLock' in navigator)) return;
         try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
@@ -884,7 +1868,6 @@
         if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
     }
     document.addEventListener('visibilitychange', function () {
-        // The lock is auto-released when the tab is hidden; re-arm on return.
         if (!document.hidden && inCall && !wakeLock) requestWakeLock();
     });
 
@@ -929,7 +1912,6 @@
         }
     });
     if (toggleScreenBtn) {
-        // Screen capture is unavailable on most mobile browsers; hide the button.
         if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
             toggleScreenBtn.hidden = true;
         }
@@ -938,12 +1920,24 @@
         });
     }
 
-    // ---- owner controls (invite link / delete room) ------------------------
+    // ---- owner controls (invite, revoke, kick, update, delete room) -------
     const ownerControls = document.getElementById('ownerControls');
     if (ownerControls) {
         const csrf = ownerControls.querySelector('input[name=csrfmiddlewaretoken]').value;
         const inviteBtn = document.getElementById('inviteBtn');
         const deleteRoomBtn = document.getElementById('deleteRoomBtn');
+        const updateRoomForm = document.getElementById('updateRoomForm');
+        const revokeInvitesBtn = document.getElementById('revokeInvitesBtn');
+        const membersManageList = document.getElementById('membersManageList');
+        const manageFeedback = document.getElementById('manageRoomFeedback');
+
+        function setManageFeedback(msg, isErr) {
+            if (!manageFeedback) return;
+            const d = document.createElement('div');
+            d.className = 'alert py-1 px-2 small mb-0 ' + (isErr ? 'alert-danger' : 'alert-success');
+            d.textContent = msg;
+            manageFeedback.replaceChildren(d);
+        }
 
         if (inviteBtn) inviteBtn.addEventListener('click', async function () {
             try {
@@ -958,6 +1952,74 @@
                 inviteBtn.innerHTML = '<i class="bi bi-clipboard-check"></i> Copiat!';
                 setTimeout(function () { inviteBtn.innerHTML = original; }, 2000);
             } catch (e) { showError('Nu am putut copia linkul.'); }
+        });
+
+        if (revokeInvitesBtn) revokeInvitesBtn.addEventListener('click', async function () {
+            try {
+                const r = await fetch("{% url 'chat:room_revoke_invites' room_name %}", {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                const j = await r.json();
+                if (j.success) {
+                    const lbl = document.getElementById('inviteVersionLabel');
+                    if (lbl) lbl.textContent = String(j.invite_version);
+                    setManageFeedback('Toate linkurile anterioare de invitație au fost revocate!', false);
+                } else {
+                    setManageFeedback(j.error || 'Eroare la revocare.', true);
+                }
+            } catch (e) { setManageFeedback('Eroare la revocare.', true); }
+        });
+
+        if (updateRoomForm) updateRoomForm.addEventListener('submit', async function (e) {
+            e.preventDefault();
+            try {
+                const fd = new FormData(updateRoomForm);
+                if (!document.getElementById('editRoomPrivate').checked) {
+                    fd.set('is_private', 'false');
+                }
+                const r = await fetch("{% url 'chat:room_update' room_name %}", {
+                    method: 'POST',
+                    body: fd,
+                    headers: { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                const j = await r.json();
+                if (j.success) {
+                    const banner = document.getElementById('roomDescriptionBanner');
+                    const txt = document.getElementById('roomDescriptionText');
+                    const lock = document.getElementById('roomPrivateLock');
+                    if (txt) txt.textContent = j.description || '';
+                    if (banner) banner.classList.toggle('d-none', !j.description);
+                    if (lock) lock.classList.toggle('d-none', !j.is_private);
+                    setManageFeedback('Setările camerei au fost salvate.', false);
+                } else {
+                    setManageFeedback(j.error || 'Eroare la salvare.', true);
+                }
+            } catch (e) { setManageFeedback('Eroare la salvare.', true); }
+        });
+
+        if (membersManageList) membersManageList.addEventListener('click', async function (e) {
+            const btn = e.target.closest('.kick-member-btn');
+            if (!btn) return;
+            const targetUser = btn.dataset.username;
+            if (!window.confirm('Elimini pe ' + targetUser + ' din această cameră privată?')) return;
+            try {
+                const fd = new FormData();
+                fd.set('username', targetUser);
+                const r = await fetch("{% url 'chat:room_kick_member' room_name %}", {
+                    method: 'POST',
+                    body: fd,
+                    headers: { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                const j = await r.json();
+                if (j.success) {
+                    const li = membersManageList.querySelector('li[data-member="' + targetUser + '"]');
+                    if (li) li.remove();
+                    setManageFeedback(targetUser + ' a fost eliminat din cameră.', false);
+                } else {
+                    setManageFeedback(j.error || 'Nu am putut elimina membrul.', true);
+                }
+            } catch (e) { setManageFeedback('Eroare la eliminarea membrului.', true); }
         });
 
         if (deleteRoomBtn) deleteRoomBtn.addEventListener('click', async function () {
@@ -976,7 +2038,7 @@
 
     // ---- go ---------------------------------------------------------------
     renderDaySeparators();
-    autoScroll();
+    autoScroll(true);
     connect();
 })();
 </script>

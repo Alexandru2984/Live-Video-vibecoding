@@ -1,44 +1,118 @@
 {% extends 'chat/base.html' %}
 
-{% block title %}Camere{% endblock %}
+{% block title %}Camere de chat & Video live{% endblock %}
+
+{% block extra_head %}
+<style>
+    .room-card {
+        transition: transform .15s ease, box-shadow .15s ease;
+        border: 1px solid var(--surface-border);
+    }
+    .room-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 24px rgba(25, 20, 60, 0.14) !important;
+    }
+    .live-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #22c55e; display: inline-block;
+        box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2);
+    }
+    .filter-pills .btn { border-radius: 999px; font-size: .82rem; }
+</style>
+{% endblock %}
 
 {% block content %}
 <div class="row g-4">
     <div class="col-lg-8">
         <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
-            <h1 class="h3 mb-0">
-                <i class="bi bi-chat-square-dots"></i> Camere de chat
-            </h1>
-            <span class="badge text-bg-secondary">{{ rooms|length }} {{ rooms|length|pluralize:"cameră,camere" }}</span>
+            <div>
+                <h1 class="h3 mb-1">
+                    <i class="bi bi-chat-square-dots text-primary"></i> Camere de chat
+                </h1>
+                <p class="text-body-secondary small mb-0">
+                    Conversații în timp real, reacții, mențiuni și apeluri video de grup WebRTC.
+                </p>
+            </div>
+            <span class="badge text-bg-secondary fs-6" id="visibleRoomsCount">{{ rooms|length }} {{ rooms|length|pluralize:"cameră,camere" }}</span>
         </div>
 
         {% if rooms %}
-            <div class="row g-3">
-                {% for room in rooms %}
-                <div class="col-sm-6">
-                    <div class="card h-100 shadow-sm">
-                        <div class="card-body d-flex flex-column">
-                            <h5 class="card-title text-truncate">
-                                <i class="bi bi-door-open text-primary"></i> {{ room.name }}
-                                {% if room.is_private %}
-                                    <i class="bi bi-lock-fill text-warning" title="Cameră privată"></i>
+            <div class="card shadow-sm mb-3">
+                <div class="card-body py-2 px-3">
+                    <div class="row g-2 align-items-center">
+                        <div class="col-sm-6">
+                            <div class="input-group input-group-sm">
+                                <span class="input-group-text bg-transparent border-end-0"><i class="bi bi-search"></i></span>
+                                <input type="search" id="roomSearchInput" class="form-control border-start-0"
+                                       placeholder="Caută o cameră după nume sau descriere…" autocomplete="off">
+                            </div>
+                        </div>
+                        <div class="col-sm-6">
+                            <div class="d-flex gap-1 flex-wrap justify-content-sm-end filter-pills" id="roomFilterPills">
+                                <button type="button" class="btn btn-sm btn-brand active" data-filter="all">Toate</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" data-filter="public">Publice</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" data-filter="private">Private</button>
+                                {% if user.is_authenticated %}
+                                <button type="button" class="btn btn-sm btn-outline-secondary" data-filter="mine">Ale mele</button>
                                 {% endif %}
-                            </h5>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row g-3" id="roomsGrid">
+                {% for room in rooms %}
+                <div class="col-sm-6 room-item"
+                     data-name="{{ room.name|lower }}"
+                     data-desc="{{ room.description|default:''|lower }}"
+                     data-private="{{ room.is_private|yesno:'true,false' }}"
+                     data-mine="{% if user.is_authenticated and room.owner_id == user.id %}true{% else %}false{% endif %}">
+                    <div class="card h-100 shadow-sm room-card">
+                        <div class="card-body d-flex flex-column">
+                            <div class="d-flex align-items-start justify-content-between gap-2 mb-2">
+                                <h5 class="card-title text-truncate mb-0">
+                                    <i class="bi bi-hash text-primary"></i>{{ room.name }}
+                                    {% if room.is_private %}
+                                        <i class="bi bi-lock-fill text-warning" title="Cameră privată"></i>
+                                    {% endif %}
+                                </h5>
+                                {% if room.online_count %}
+                                    <span class="badge text-bg-success d-inline-flex align-items-center gap-1">
+                                        <span class="live-dot bg-white"></span> {{ room.online_count }} online
+                                    </span>
+                                {% else %}
+                                    <span class="badge bg-secondary-subtle text-secondary-emphasis">0 online</span>
+                                {% endif %}
+                            </div>
+
                             {% if room.description %}
-                                <p class="card-text text-body-secondary small">{{ room.description }}</p>
+                                <p class="card-text text-body-secondary small mb-3">{{ room.description }}</p>
+                            {% else %}
+                                <p class="card-text text-body-secondary small fst-italic mb-3">Fără descriere</p>
                             {% endif %}
-                            <p class="card-text mt-auto mb-2">
-                                <small class="text-body-secondary">
-                                    <i class="bi bi-clock"></i> {{ room.created_at|date:"d M Y, H:i" }}
-                                </small>
-                            </p>
-                            <a href="{% url 'chat:room' room.name %}" class="btn btn-brand">
-                                <i class="bi bi-arrow-right-circle"></i> Intră în cameră
-                            </a>
+
+                            <div class="mt-auto">
+                                <div class="d-flex align-items-center justify-content-between text-body-secondary small mb-2 flex-wrap gap-1">
+                                    <span>
+                                        <i class="bi bi-chat-left-text"></i> {{ room.message_count|default:0 }} mesaje
+                                    </span>
+                                    <span>
+                                        <i class="bi bi-clock"></i> {{ room.last_activity|default:room.created_at|date:"d M Y, H:i" }}
+                                    </span>
+                                </div>
+                                <a href="{% url 'chat:room' room.name %}" class="btn btn-brand w-100">
+                                    <i class="bi bi-arrow-right-circle"></i> Intră în cameră
+                                </a>
+                            </div>
                         </div>
                     </div>
                 </div>
                 {% endfor %}
+            </div>
+            <div id="noRoomsMatch" class="surface p-4 text-center text-body-secondary d-none mt-3">
+                <i class="bi bi-search fs-2 d-block mb-2"></i>
+                Nicio cameră nu corespunde filtrului selectat.
             </div>
         {% else %}
             <div class="surface p-4 text-center text-body-secondary">
@@ -61,11 +135,12 @@
                             <label for="room_name" class="form-label">Nume cameră</label>
                             <input type="text" class="form-control" id="room_name" name="room_name"
                                    maxlength="100" placeholder="ex: general" required>
-                            <div class="form-text">Litere, cifre și underscore.</div>
+                            <div class="form-text">Litere ASCII (a-z), cifre și underscore.</div>
                         </div>
                         <div class="mb-3">
                             <label for="description" class="form-label">Descriere <small class="text-body-secondary">(opțional)</small></label>
-                            <textarea class="form-control" id="description" name="description" rows="2" maxlength="1000"></textarea>
+                            <textarea class="form-control" id="description" name="description" rows="2" maxlength="1000"
+                                      placeholder="Despre ce se discută în cameră?"></textarea>
                         </div>
                         <div class="form-check form-switch mb-3">
                             <input class="form-check-input" type="checkbox" id="is_private" name="is_private">
@@ -83,7 +158,7 @@
                     <div id="message" class="mt-3"></div>
                 {% else %}
                     <p class="text-body-secondary mb-3">
-                        <i class="bi bi-lock"></i> Conectează-te pentru a crea o cameră.
+                        <i class="bi bi-lock"></i> Conectează-te pentru a crea o cameră sau a participa la conversații.
                     </p>
                     <div class="d-grid gap-2">
                         <a href="{% url 'chat:login' %}" class="btn btn-brand"><i class="bi bi-box-arrow-in-right"></i> Conectare</a>
@@ -95,15 +170,15 @@
 
         <div class="card shadow-sm mt-3">
             <div class="card-header bg-transparent">
-                <h6 class="card-title mb-0"><i class="bi bi-info-circle"></i> Cum funcționează</h6>
+                <h6 class="card-title mb-0"><i class="bi bi-lightning-charge"></i> Funcționalități & Comenzi</h6>
             </div>
             <div class="card-body">
                 <ul class="list-unstyled small mb-0">
-                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Chat în timp real prin WebSockets</li>
-                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Vezi cine e online și cine scrie</li>
-                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Apel video de grup (WebRTC)</li>
-                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> Camere private cu invitații</li>
-                    <li><i class="bi bi-check2-circle text-success"></i> Mesajele se salvează automat</li>
+                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> <strong>Reply, Edit & Reacții</strong> live pe orice mesaj</li>
+                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> <strong>Formatare</strong>: <code>**bold**</code>, <code>*italic*</code>, <code>`cod`</code>, linkuri și <code>@mențiuni</code></li>
+                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> <strong>Comenzi</strong>: <code>/shrug</code>, <code>/me</code>, <code>/roll</code>, <code>/clear</code>, <code>/help</code></li>
+                    <li class="mb-2"><i class="bi bi-check2-circle text-success"></i> <strong>Apel video</strong> de grup (WebRTC) + partajare ecran</li>
+                    <li><i class="bi bi-check2-circle text-success"></i> <strong>Camere private</strong> cu invitații revocabile & moderare</li>
                 </ul>
             </div>
         </div>
@@ -115,34 +190,78 @@
 <script nonce="{{ csp_nonce }}">
 (function () {
     const form = document.getElementById('createRoomForm');
-    if (!form) return;
-    const messageDiv = document.getElementById('message');
-
-    form.addEventListener('submit', function (e) {
-        e.preventDefault();
-        fetch('{% url "chat:create_room" %}', {
-            method: 'POST',
-            body: new FormData(form),
-            headers: { 'X-Requested-With': 'XMLHttpRequest' },
-        })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
+    if (form) {
+        const messageDiv = document.getElementById('message');
+        form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            fetch('{% url "chat:create_room" %}', {
+                method: 'POST',
+                body: new FormData(form),
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    messageDiv.innerHTML =
+                        '<div class="alert alert-success py-2 mb-0"><i class="bi bi-check-circle"></i> Cameră creată!</div>';
+                    setTimeout(() => { window.location.href = '/room/' + encodeURIComponent(data.room_name) + '/'; }, 600);
+                } else {
+                    const alert = document.createElement('div');
+                    alert.className = 'alert alert-danger py-2 mb-0';
+                    alert.textContent = data.error || 'A apărut o eroare.';
+                    messageDiv.replaceChildren(alert);
+                }
+            })
+            .catch(() => {
                 messageDiv.innerHTML =
-                    '<div class="alert alert-success py-2 mb-0"><i class="bi bi-check-circle"></i> Cameră creată!</div>';
-                setTimeout(() => { window.location.href = '/room/' + encodeURIComponent(data.room_name) + '/'; }, 800);
-            } else {
-                const alert = document.createElement('div');
-                alert.className = 'alert alert-danger py-2 mb-0';
-                alert.textContent = data.error || 'A apărut o eroare.';
-                messageDiv.replaceChildren(alert);
-            }
-        })
-        .catch(() => {
-            messageDiv.innerHTML =
-                '<div class="alert alert-danger py-2 mb-0"><i class="bi bi-exclamation-triangle"></i> A apărut o eroare.</div>';
+                    '<div class="alert alert-danger py-2 mb-0"><i class="bi bi-exclamation-triangle"></i> A apărut o eroare.</div>';
+            });
         });
-    });
+    }
+
+    // Client-side search & filter for rooms in the lobby.
+    const searchInput = document.getElementById('roomSearchInput');
+    const filterPills = document.getElementById('roomFilterPills');
+    const items = Array.from(document.querySelectorAll('.room-item'));
+    const noMatch = document.getElementById('noRoomsMatch');
+    const countBadge = document.getElementById('visibleRoomsCount');
+    let activeFilter = 'all';
+
+    function applyFilter() {
+        if (!items.length) return;
+        const q = (searchInput ? searchInput.value : '').trim().toLowerCase();
+        let shown = 0;
+        items.forEach(function (el) {
+            const name = el.dataset.name || '';
+            const desc = el.dataset.desc || '';
+            const isPriv = el.dataset.private === 'true';
+            const isMine = el.dataset.mine === 'true';
+            let passTab = true;
+            if (activeFilter === 'public') passTab = !isPriv;
+            else if (activeFilter === 'private') passTab = isPriv;
+            else if (activeFilter === 'mine') passTab = isMine;
+            const passQuery = !q || name.indexOf(q) !== -1 || desc.indexOf(q) !== -1;
+            const visible = passTab && passQuery;
+            el.classList.toggle('d-none', !visible);
+            if (visible) shown++;
+        });
+        if (noMatch) noMatch.classList.toggle('d-none', shown > 0);
+        if (countBadge) countBadge.textContent = shown + (shown === 1 ? ' cameră' : ' camere');
+    }
+
+    if (searchInput) searchInput.addEventListener('input', applyFilter);
+    if (filterPills) {
+        filterPills.addEventListener('click', function (e) {
+            const btn = e.target.closest('button[data-filter]');
+            if (!btn) return;
+            activeFilter = btn.dataset.filter;
+            filterPills.querySelectorAll('button').forEach(function (b) {
+                const active = b === btn;
+                b.className = 'btn btn-sm ' + (active ? 'btn-brand active' : 'btn-outline-secondary');
+            });
+            applyFilter();
+        });
+    }
 })();
 </script>
 {% endblock %}
