@@ -39,6 +39,7 @@ class ChatConsumerTests(TransactionTestCase):
         # Presence/call are module-level registries; isolate them between tests.
         chat.consumers._room_members.clear()
         chat.consumers._call_members.clear()
+        chat.consumers._room_peers.clear()
         self.room = ChatRoom.objects.create(name='general', description='x')
         self.ana = User.objects.create_user('ana', password='pw')
         self.john = User.objects.create_user('john', password='pw')
@@ -369,4 +370,44 @@ class ChatConsumerTests(TransactionTestCase):
             self.assertTrue(any(m.get('type') == 'typing' and m.get('username') == 'ana' for m in b_msgs))
             self.assertFalse(any(m.get('type') == 'typing' for m in a_msgs))
             await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()
+
+    def test_webrtc_signal_rejects_non_dict_payload_and_self_or_unknown_peer(self):
+        async def body():
+            a, _, _ = await self._connect(self.ana)
+            b, _, _ = await self._connect(self.john)
+            a_peer = peer_of(await drain(a))
+            b_peer = peer_of(await drain(b))
+            # Non-dict payload must be dropped.
+            await a.send_json_to({
+                'type': 'webrtc_signal', 'to': b_peer, 'kind': 'offer',
+                'payload': 'not-a-dict',
+            })
+            # Self-signalling must be dropped.
+            await a.send_json_to({
+                'type': 'webrtc_signal', 'to': a_peer, 'kind': 'offer',
+                'payload': {'type': 'offer', 'sdp': 'x'},
+            })
+            a_msgs, b_msgs = await drain(a), await drain(b)
+            self.assertFalse(any(m.get('type') == 'webrtc_signal' for m in a_msgs))
+            self.assertFalse(any(m.get('type') == 'webrtc_signal' for m in b_msgs))
+            await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()
+
+    def test_revoked_private_room_member_cannot_post_messages(self):
+        async def body():
+            room = await sync_to_async(ChatRoom.objects.create)(
+                name='priv', is_private=True, owner=self.ana)
+            await sync_to_async(room.members.add)(self.john)
+            j, connected, _ = await self._connect(self.john, room='priv')
+            self.assertTrue(connected)
+            await drain(j)
+            # Revoke membership while socket is still open.
+            await sync_to_async(room.members.remove)(self.john)
+            await j.send_json_to({'message': 'sneaky'})
+            msgs = await drain(j)
+            self.assertFalse(any(m.get('type') == 'message' for m in msgs))
+            count = await sync_to_async(Message.objects.filter(room=room).count)()
+            self.assertEqual(count, 0)
+            await j.disconnect()
         async_to_sync(body)()

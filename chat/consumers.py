@@ -77,6 +77,26 @@ def _presence_list(room):
 # the presence roster above.
 PEER_ID_RE = re.compile(r'^[0-9a-f]{16}$')
 _call_members = defaultdict(set)
+_room_peers = defaultdict(set)
+
+
+def _peer_register(room, peer_id):
+    with _presence_lock:
+        _room_peers[room].add(peer_id)
+
+
+def _peer_unregister(room, peer_id):
+    with _presence_lock:
+        peers = _room_peers.get(room)
+        if peers:
+            peers.discard(peer_id)
+            if not peers:
+                _room_peers.pop(room, None)
+
+
+def _peer_in_room(room, peer_id):
+    with _presence_lock:
+        return peer_id in _room_peers.get(room, ())
 
 
 def _peer_group(room_group_name, peer_id):
@@ -160,6 +180,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self.peer_group_name = _peer_group(self.room_group_name, self.peer_id)
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.channel_layer.group_add(self.peer_group_name, self.channel_name)
+        _peer_register(self.room_group_name, self.peer_id)
         await self.accept()
         self.joined = True
         logger.debug('User %s connected to room %s', self.user.username, self.room_name)
@@ -184,6 +205,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         if not self.joined:
             return  # rejected handshake: nothing was registered
+        _peer_unregister(self.room_group_name, self.peer_id)
         if self.in_call:
             _, count = _call_remove(self.room_group_name, self.peer_id)
             await self.channel_layer.group_send(
@@ -277,9 +299,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         to = data.get('to')
         kind = data.get('kind')
         payload = data.get('payload')
-        if not isinstance(to, str) or not PEER_ID_RE.match(to):
+        if not isinstance(to, str) or not PEER_ID_RE.match(to) or to == self.peer_id:
             return
-        if kind not in ('offer', 'answer', 'candidate') or payload is None:
+        if not _peer_in_room(self.room_group_name, to):
+            return
+        if kind not in ('offer', 'answer', 'candidate') or not isinstance(payload, dict):
             return
         if self.is_rate_limited('signal'):
             return  # drop silently; errors here would only add traffic
@@ -331,7 +355,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if self.is_rate_limited('call') or not self.in_call:
             return
         to = data.get('to')
-        if isinstance(to, str) and PEER_ID_RE.match(to):
+        if (
+            isinstance(to, str)
+            and PEER_ID_RE.match(to)
+            and to != self.peer_id
+            and _peer_in_room(self.room_group_name, to)
+        ):
             await self.send_to_peer(to, {
                 'type': 'call_present',
                 'username': self.user.username,
@@ -478,8 +507,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def save_message(self, message):
         room = ChatRoom.objects.filter(name=self.room_name).first()
-        if room is None:
-            # Room was deleted between connect and now; drop silently.
+        if room is None or not room.can_access(self.user):
+            # Room was deleted or private access was revoked mid-session.
             return None
         return Message.objects.create(room=room, user=self.user, content=message)
 

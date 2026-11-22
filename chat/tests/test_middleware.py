@@ -32,3 +32,10 @@ class ContentSecurityPolicyTests(TestCase):
         self.assertNotIn('jsdelivr', csp)
         self.assertNotIn('https:', csp)  # no blanket https: exfiltration channel
         self.assertIn('wss://testserver', csp)
+
+    def test_permissions_policy_and_coop_headers_present(self):
+        resp = self.client.get('/')
+        self.assertIn('Permissions-Policy', resp)
+        self.assertIn('camera=(self)', resp['Permissions-Policy'])
+        self.assertIn('microphone=(self)', resp['Permissions-Policy'])
+        self.assertEqual(resp['Cross-Origin-Opener-Policy'], 'same-origin')

@@ -20,6 +20,11 @@ class ContentSecurityPolicyMiddleware:
             'Content-Security-Policy',
             self._policy(request.csp_nonce, request.get_host()),
         )
+        response.setdefault(
+            'Permissions-Policy',
+            'camera=(self), microphone=(self), display-capture=(self), geolocation=()',
+        )
+        response.setdefault('Cross-Origin-Opener-Policy', 'same-origin')
         return response
 
     @staticmethod

@@ -196,9 +196,10 @@ class CreateRoomViewTests(TestCase):
 
     def test_rejects_invalid_name(self):
         self.client.force_login(self.user)
-        data = self.client.post('/create/', {'room_name': 'bad name!'}).json()
-        self.assertFalse(data['success'])
-        self.assertFalse(ChatRoom.objects.filter(name='bad name!').exists())
+        for bad in ('bad name!', 'café', 'москва', '___'):
+            data = self.client.post('/create/', {'room_name': bad}).json()
+            self.assertFalse(data['success'], f'Expected {bad!r} to be rejected')
+            self.assertFalse(ChatRoom.objects.filter(name=bad).exists())
 
     def test_rejects_duplicate(self):
         ChatRoom.objects.create(name='dup')
@@ -330,13 +331,41 @@ class AccountManagementTests(TestCase):
 
     def test_delete_account_removes_user_and_messages(self):
         room = ChatRoom.objects.create(name='general')
+        priv = ChatRoom.objects.create(name='myvault', owner=self.user, is_private=True)
         Message.objects.create(room=room, user=self.user, content='bye')
         self.client.force_login(self.user)
         resp = self.client.post('/account/delete/', {'password': STRONG})
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(User.objects.filter(username='selfsvc').exists())
+        self.assertFalse(ChatRoom.objects.filter(pk=priv.pk).exists())
         self.assertEqual(Message.objects.count(), 0)
         self.assertNotIn('_auth_user_id', self.client.session)
+
+    @override_settings(LOGIN_RATE_LIMIT=2)
+    def test_delete_account_rate_limited(self):
+        self.client.force_login(self.user)
+        for _ in range(2):
+            self.client.post('/account/delete/', {'password': 'wrong'})
+        resp = self.client.post('/account/delete/', {'password': STRONG})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(User.objects.filter(username='selfsvc').exists())
+        self.assertContains(resp, 'Prea multe încercări')
+
+    @override_settings(LOGIN_RATE_LIMIT=2)
+    def test_password_change_rate_limited(self):
+        self.client.force_login(self.user)
+        new = STRONG + 'nou1!'
+        for _ in range(2):
+            self.client.post('/account/password/', {
+                'old_password': 'wrong', 'new_password1': new, 'new_password2': new,
+            })
+        resp = self.client.post('/account/password/', {
+            'old_password': STRONG, 'new_password1': new, 'new_password2': new,
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(STRONG))
+        self.assertContains(resp, 'Prea multe încercări')
 
 
 class HealthzTests(TestCase):
@@ -358,6 +387,8 @@ class ServiceWorkerViewTests(TestCase):
         resp = self.client.get('/sw.js')
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp['Content-Type'], 'application/javascript')
+        self.assertEqual(resp['Cache-Control'], 'no-cache, no-store, must-revalidate')
+        self.assertEqual(resp['Service-Worker-Allowed'], '/')
         self.assertIn(b'addEventListener', resp.content)
 
 

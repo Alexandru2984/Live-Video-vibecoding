@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -250,6 +251,16 @@ REGISTRATION_RATE_LIMIT = int(os.environ.get('REGISTRATION_RATE_LIMIT', '5'))
 LOGIN_RATE_LIMIT = int(os.environ.get('LOGIN_RATE_LIMIT', '10'))
 # Max rooms one user may create per hour.
 ROOM_CREATION_RATE_LIMIT = int(os.environ.get('ROOM_CREATION_RATE_LIMIT', '10'))
+# Max invite links one owner may mint per hour.
+ROOM_INVITE_RATE_LIMIT = int(os.environ.get('ROOM_INVITE_RATE_LIMIT', '30'))
+
+# Use a fast password hasher when running the automated test suite so PBKDF2
+# (1.2M iterations in Django 6) doesn't add ~100s of CPU overhead to tests.
+# AUTH_PASSWORD_VALIDATORS remain active.
+if 'test' in sys.argv:
+    PASSWORD_HASHERS = [
+        'django.contrib.auth.hashers.MD5PasswordHasher',
+    ]
 
 # Error tracking (optional): set SENTRY_DSN and `pip install sentry-sdk`.
 # PII is never sent (send_default_pii=False) — errors only, no tracing.

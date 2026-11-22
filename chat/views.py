@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import re
 import time
 
 from asgiref.sync import async_to_sync
@@ -32,6 +33,9 @@ LOGIN_RATE_WINDOW = 600
 # Signed invite links for private rooms.
 INVITE_SALT = 'chat.room-invite'
 INVITE_MAX_AGE = 7 * 24 * 3600  # seconds
+
+# Strict ASCII room name pattern (prevents Unicode homograph spoofing).
+ROOM_NAME_RE = re.compile(r'^[A-Za-z0-9_]+$')
 
 
 def _client_ip(request):
@@ -143,8 +147,9 @@ def create_room(request):
         return JsonResponse({'success': False, 'error': 'Numele camerei este obligatoriu'})
     if len(room_name) > 100:
         return JsonResponse({'success': False, 'error': 'Numele camerei este prea lung'})
-    # Room names must match the WebSocket route (\w+): letters, digits, underscore.
-    if not room_name.isidentifier() and not room_name.replace('_', '').isalnum():
+    # Room names must match the WebSocket route (\w+) with strict ASCII letters,
+    # digits, and underscore (at least one alphanumeric character).
+    if not ROOM_NAME_RE.fullmatch(room_name) or not room_name.strip('_'):
         return JsonResponse({
             'success': False,
             'error': 'Folosește doar litere, cifre și underscore în numele camerei.',
@@ -182,6 +187,13 @@ def room_invite(request, room_name):
     if chat_room.owner_id != request.user.id:
         return JsonResponse(
             {'success': False, 'error': 'Doar proprietarul poate invita.'}, status=403)
+    rate_key = f'room-invite-rl:{request.user.pk}'
+    if cache.get(rate_key, 0) >= getattr(settings, 'ROOM_INVITE_RATE_LIMIT', 30):
+        return JsonResponse(
+            {'success': False, 'error': 'Ai generat prea multe invitații recent.'},
+            status=429,
+        )
+    _bump_rate(rate_key, 3600)
     token = signing.dumps(chat_room.name, salt=INVITE_SALT)
     link = request.build_absolute_uri(reverse('chat:room_join', args=[token]))
     return JsonResponse({'success': True, 'invite_url': link})
@@ -264,7 +276,10 @@ def service_worker(request):
     if not path:
         raise Http404
     with open(path, 'rb') as f:
-        return HttpResponse(f.read(), content_type='application/javascript')
+        response = HttpResponse(f.read(), content_type='application/javascript')
+    response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response['Service-Worker-Allowed'] = '/'
+    return response
 
 
 @login_required
@@ -334,6 +349,23 @@ class CustomPasswordChangeView(auth_views.PasswordChangeView):
     template_name = 'registration/password_change.html'
     success_url = reverse_lazy('chat:index')
 
+    def post(self, request, *args, **kwargs):
+        self._rate_keys = [
+            f'pwchange-rl:user:{request.user.pk}',
+            f'pwchange-rl:ip:{_client_ip(request)}',
+        ]
+        if any(cache.get(k, 0) >= settings.LOGIN_RATE_LIMIT for k in self._rate_keys):
+            form = self.get_form()
+            form.add_error(None, 'Prea multe încercări eșuate. Așteaptă câteva minute.')
+            self._rate_keys = []
+            return super().form_invalid(form)
+        return super().post(request, *args, **kwargs)
+
+    def form_invalid(self, form):
+        for key in getattr(self, '_rate_keys', []):
+            _bump_rate(key, LOGIN_RATE_WINDOW)
+        return super().form_invalid(form)
+
     def form_valid(self, form):
         flash.success(self.request, 'Parola a fost schimbată.')
         return super().form_valid(form)
@@ -343,16 +375,35 @@ class CustomPasswordChangeView(auth_views.PasswordChangeView):
 def delete_account(request):
     """Self-service account deletion; requires the current password.
 
-    Hard delete: the user's messages cascade with the account, so the data
-    actually leaves the database (privacy by default).
+    Hard delete: the user's messages and private owned rooms cascade with the
+    account, so the data actually leaves the database and private rooms never
+    become orphaned without an owner.
     """
     error = None
     if request.method == 'POST':
-        if request.user.check_password(request.POST.get('password', '')):
+        rate_keys = [
+            f'delacc-rl:user:{request.user.pk}',
+            f'delacc-rl:ip:{_client_ip(request)}',
+        ]
+        if any(cache.get(k, 0) >= settings.LOGIN_RATE_LIMIT for k in rate_keys):
+            error = 'Prea multe încercări eșuate. Așteaptă câteva minute.'
+        elif request.user.check_password(request.POST.get('password', '')):
             user = request.user
+            private_rooms = list(
+                ChatRoom.objects.filter(owner=user, is_private=True).values_list('name', flat=True)
+            )
+            channel_layer = get_channel_layer()
+            for rname in private_rooms:
+                async_to_sync(channel_layer.group_send)(
+                    f'chat_{rname}', {'type': 'room_deleted'},
+                )
+            ChatRoom.objects.filter(owner=user, is_private=True).delete()
             logout(request)
             user.delete()
             flash.success(request, 'Contul și mesajele tale au fost șterse definitiv.')
             return redirect('chat:index')
-        error = 'Parolă incorectă.'
+        else:
+            for k in rate_keys:
+                _bump_rate(k, LOGIN_RATE_WINDOW)
+            error = 'Parolă incorectă.'
     return render(request, 'registration/delete_account.html', {'error': error})
