@@ -7,9 +7,37 @@
     <meta name="color-scheme" content="light dark">
     <meta name="theme-color" content="#5b6fe0">
     <meta name="description" content="{% block meta_description %}micutu chat — platformă modernă de chat în timp real și apeluri video de grup WebRTC, cu camere publice și private, reacții și mesaje instant.{% endblock %}">
+    <meta name="keywords" content="{% block meta_keywords %}chat live, video chat, webrtc, camere chat, comunicare in timp real, micutu chat{% endblock %}">
+    <meta name="author" content="micutu">
     <meta name="robots" content="{% block meta_robots %}index, follow{% endblock %}">
     <title>{% block title %}Chat{% endblock %} · micutu</title>
-    {% block seo_head %}{% endblock %}
+    {% if request %}
+    <link rel="canonical" href="{% block canonical_url %}{{ request.scheme }}://{{ request.get_host }}{{ request.path }}{% endblock %}">
+    <meta property="og:site_name" content="micutu chat">
+    <meta property="og:locale" content="ro_RO">
+    <meta property="og:type" content="{% block og_type %}website{% endblock %}">
+    <meta property="og:title" content="{% block og_title %}micutu chat — Chat & Apeluri Video în Timp Real{% endblock %}">
+    <meta property="og:description" content="{% block og_description %}Platformă modernă de chat în timp real și apeluri video de grup WebRTC, cu camere publice și private, reacții și mesaje instant.{% endblock %}">
+    <meta property="og:url" content="{{ request.scheme }}://{{ request.get_host }}{{ request.path }}">
+    <meta property="og:image" content="{{ request.scheme }}://{{ request.get_host }}{% static 'icon-512.png' %}">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="{% block twitter_title %}micutu chat — Chat & Apeluri Video în Timp Real{% endblock %}">
+    <meta name="twitter:description" content="{% block twitter_description %}Conversații în timp real, reacții, mențiuni și apeluri video de grup WebRTC.{% endblock %}">
+    <meta name="twitter:image" content="{{ request.scheme }}://{{ request.get_host }}{% static 'icon-512.png' %}">
+    {% endif %}
+    {% block seo_head %}
+    <script type="application/ld+json" nonce="{{ csp_nonce }}">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "micutu chat",
+        "applicationCategory": "CommunicationApplication",
+        "operatingSystem": "All",
+        "inLanguage": "ro-RO",
+        "description": "Aplicație de chat în timp real și apeluri video de grup WebRTC cu camere publice și private."
+    }
+    </script>
+    {% endblock %}
     <link rel="manifest" href="{% static 'manifest.webmanifest' %}">
     <link rel="icon" type="image/png" href="{% static 'icon-192.png' %}">
     <link rel="apple-touch-icon" href="{% static 'icon-192.png' %}">

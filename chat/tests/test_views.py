@@ -457,6 +457,54 @@ class ServiceWorkerViewTests(TestCase):
         self.assertIn(b'addEventListener', resp.content)
 
 
+class SeoAndDiscoveryTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user('seo_user', password=STRONG)
+        self.pub = ChatRoom.objects.create(name='public_arena', description='Camera publica SEO')
+        self.priv = ChatRoom.objects.create(
+            name='hidden_vault', is_private=True, owner=self.owner,
+        )
+
+    def test_robots_txt_renders_and_links_sitemap(self):
+        resp = self.client.get('/robots.txt')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('text/plain', resp['Content-Type'])
+        body = resp.content.decode()
+        self.assertIn('Disallow: /admin/', body)
+        self.assertIn('Disallow: /join/', body)
+        self.assertIn('Sitemap: http://testserver/sitemap.xml', body)
+
+    def test_sitemap_xml_lists_only_public_rooms(self):
+        resp = self.client.get('/sitemap.xml')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('application/xml', resp['Content-Type'])
+        body = resp.content.decode()
+        self.assertIn('/room/public_arena/', body)
+        self.assertNotIn('hidden_vault', body)
+
+    def test_security_txt_renders(self):
+        resp = self.client.get('/.well-known/security.txt')
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('Contact:', resp.content.decode())
+
+    def test_seo_meta_tags_and_json_ld_on_index(self):
+        resp = self.client.get('/')
+        html = resp.content.decode()
+        self.assertIn('property="og:title"', html)
+        self.assertIn('name="twitter:card"', html)
+        self.assertIn('rel="canonical"', html)
+        self.assertIn('application/ld+json', html)
+
+    def test_private_room_and_account_pages_have_noindex(self):
+        self.client.force_login(self.owner)
+        priv_html = self.client.get('/room/hidden_vault/').content.decode()
+        self.assertIn('content="noindex, nofollow"', priv_html)
+        pub_html = self.client.get('/room/public_arena/').content.decode()
+        self.assertIn('content="index, follow"', pub_html)
+        pw_html = self.client.get('/account/password/').content.decode()
+        self.assertIn('content="noindex, nofollow"', pw_html)
+
+
 class IceServersViewTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('caller', password=STRONG)

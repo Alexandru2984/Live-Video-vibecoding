@@ -5,6 +5,9 @@ app_name = 'chat'
 
 urlpatterns = [
     path('', views.index, name='index'),
+    path('robots.txt', views.robots_txt, name='robots_txt'),
+    path('sitemap.xml', views.sitemap_xml, name='sitemap_xml'),
+    path('.well-known/security.txt', views.security_txt, name='security_txt'),
     path('sw.js', views.service_worker, name='service_worker'),
     path('healthz', views.healthz, name='healthz'),
     path('room/<str:room_name>/', views.room, name='room'),

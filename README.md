@@ -10,16 +10,23 @@ video de grup (mesh WebRTC) cu partajare de ecran.
 - Chat în timp real prin WebSockets (Django Channels + Daphne)
 - Camere multiple, istoric salvat, „mesaje mai vechi" la scroll, separatoare pe zile
 - Backfill automat al mesajelor pierdute la reconectare (dedupe pe id)
-- Camere **private** cu link-uri de invitație semnate (expiră în 7 zile),
-  proprietar, ștergere de cameră
+- **Reply / Quote la mesaje** cu scroll și evidențiere la mesajul original
+- **Editarea propriilor mesaje** în timp real (cu marcaj `(editat)` și scurtătură `↑`)
+- **Reacții cu Emoji** (`👍`, `❤️`, `😂`, `🔥`, `😮`, `😢`, `🎉`, `💯`) contorizate live
+- **Mesaje fixate (Pinned Messages)** gestionate de proprietarul camerei / staff
+- **Formatare Rich-Text 100% XSS-Safe**: blocuri de cod, cod inline, `**bold**`, `*italic*`, auto-link URL-uri și **mențiuni `@username`** cu autocomplete și alertă sonoră dedicată
+- **Comenzi rapide (`/slash commands`)**: `/shrug`, `/me`, `/roll [NdM]`, `/clear`, `/help`
+- **Căutare instantă în mesaje** (`/room/<name>/search/?q=...`) și filtrare/căutare camere în lobby
+- Camere **private** cu link-uri de invitație semnate (expiră în 7 zile), **revocare instantă a tuturor invitațiilor**, **eliminare (kick) membri cu deconectare live din WebSocket**, editare descriere/vizibilitate și ștergere de cameră
 - Ștergerea propriilor mesaje (hard delete, broadcast în cameră)
-- Prezență live (cine e online) și indicator de tastare
+- Prezență live (cine e online), avatare dinamice colorate cu inițiale și indicator de tastare
+- Pilulă flotantă „↓ Mesaje noi" la scroll în istoric + contor de mesaje necitite în titlul tab-ului
 - Înregistrare publică cu validare parolă + rate-limit pe IP
-- Schimbare parolă și **ștergere de cont self-service** (mesajele se șterg în cascadă)
+- Schimbare parolă și **ștergere de cont self-service** (mesajele și camerele private deținute se șterg în cascadă)
 - Notificări sonore și desktop (opt-in), auto-reconnect WebSocket
-- Temă light/dark, design responsive (mobile-first), **PWA instalabilă**
-- Apel video **de grup** (mesh WebRTC, perfect negotiation, cap configurabil),
-  partajare de ecran, wake lock pe mobil
+- Temă light/dark, design responsive (mobile-first cu drawer rapid pe telefon), **PWA instalabilă**
+- Apel video **de grup** (mesh WebRTC, perfect negotiation, cap configurabil), partajare de ecran, fullscreen și wake lock pe mobil
+- **SEO & Discovery complet**: `/robots.txt`, `/sitemap.xml` dinamic (doar camerele publice), `/.well-known/security.txt`, Open Graph, Twitter Cards, URL-uri canonice, JSON-LD `WebApplication` și `noindex` automat pe camerele private
 - Panel de administrare Django
 
 ## 🔒 Securitate (implementat)

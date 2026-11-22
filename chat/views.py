@@ -4,6 +4,7 @@ import hmac
 import json
 import re
 import time
+from xml.sax.saxutils import escape as xml_escape
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -411,6 +412,92 @@ def healthz(request):
     except Exception:
         return JsonResponse({'status': 'error'}, status=503)
     return JsonResponse({'status': 'ok'})
+
+
+def robots_txt(request):
+    """Search engine directives; disallows private/API/account endpoints."""
+    sitemap_url = request.build_absolute_uri(reverse('chat:sitemap_xml'))
+    lines = [
+        'User-agent: *',
+        'Allow: /',
+        'Disallow: /admin/',
+        'Disallow: /account/',
+        'Disallow: /create/',
+        'Disallow: /join/',
+        'Disallow: /ice-servers/',
+        'Disallow: /room/*/messages/',
+        'Disallow: /room/*/search/',
+        'Disallow: /room/*/invite/',
+        'Disallow: /room/*/kick/',
+        'Disallow: /room/*/update/',
+        'Disallow: /room/*/delete/',
+        '',
+        f'Sitemap: {sitemap_url}',
+    ]
+    return HttpResponse('\n'.join(lines) + '\n', content_type='text/plain; charset=utf-8')
+
+
+def sitemap_xml(request):
+    """Dynamic XML sitemap exposing public pages and public chat rooms only."""
+    urls = [
+        {
+            'loc': request.build_absolute_uri(reverse('chat:index')),
+            'changefreq': 'hourly',
+            'priority': '1.0',
+        },
+        {
+            'loc': request.build_absolute_uri(reverse('chat:login')),
+            'changefreq': 'monthly',
+            'priority': '0.5',
+        },
+    ]
+    if settings.ALLOW_REGISTRATION:
+        urls.append({
+            'loc': request.build_absolute_uri(reverse('chat:register')),
+            'changefreq': 'monthly',
+            'priority': '0.6',
+        })
+
+    public_rooms = (
+        ChatRoom.objects.filter(is_private=False)
+        .annotate(last_activity=Max('messages__timestamp'))
+        .order_by('-created_at')
+    )
+    for r in public_rooms:
+        lastmod_dt = r.last_activity or r.created_at
+        urls.append({
+            'loc': request.build_absolute_uri(reverse('chat:room', args=[r.name])),
+            'lastmod': timezone.localtime(lastmod_dt).strftime('%Y-%m-%d'),
+            'changefreq': 'daily',
+            'priority': '0.8',
+        })
+
+    xml_parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+    for u in urls:
+        xml_parts.append('  <url>')
+        xml_parts.append(f'    <loc>{xml_escape(u["loc"])}</loc>')
+        if 'lastmod' in u:
+            xml_parts.append(f'    <lastmod>{xml_escape(u["lastmod"])}</lastmod>')
+        xml_parts.append(f'    <changefreq>{u["changefreq"]}</changefreq>')
+        xml_parts.append(f'    <priority>{u["priority"]}</priority>')
+        xml_parts.append('  </url>')
+    xml_parts.append('</urlset>')
+    return HttpResponse('\n'.join(xml_parts) + '\n', content_type='application/xml; charset=utf-8')
+
+
+def security_txt(request):
+    """RFC 9116 security.txt discovery endpoint."""
+    canonical = request.build_absolute_uri(reverse('chat:security_txt'))
+    lines = [
+        'Contact: mailto:security@micutu.com',
+        'Expires: 2027-12-31T23:59:59.000Z',
+        'Preferred-Languages: ro, en',
+        f'Canonical: {canonical}',
+    ]
+    return HttpResponse('\n'.join(lines) + '\n', content_type='text/plain; charset=utf-8')
 
 
 def service_worker(request):
