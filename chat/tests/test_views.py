@@ -293,6 +293,71 @@ class PrivateRoomTests(TestCase):
         self.assertTrue(data['success'])
         self.assertFalse(ChatRoom.objects.filter(name='secret').exists())
 
+    def test_revoke_invite_invalidates_existing_link(self):
+        self._create_private()
+        invite = self.client.post('/room/secret/invite/').json()
+        self.assertTrue(invite['success'])
+
+        # Stranger cannot revoke invites.
+        self.client.force_login(self.stranger)
+        self.assertEqual(self.client.post('/room/secret/invite/revoke/').status_code, 403)
+
+        # Owner revokes invites.
+        self.client.force_login(self.owner)
+        rev = self.client.post('/room/secret/invite/revoke/').json()
+        self.assertTrue(rev['success'])
+        self.assertEqual(rev['invite_version'], 2)
+
+        # Old invite link is now rejected.
+        self.client.force_login(self.stranger)
+        resp = self.client.get(invite['invite_url'])
+        self.assertRedirects(resp, '/')
+        self.assertFalse(
+            ChatRoom.objects.get(name='secret').members.filter(pk=self.stranger.pk).exists())
+
+    def test_kick_member_and_update_room(self):
+        room = self._create_private()
+        room.members.add(self.stranger)
+
+        # Stranger cannot kick or update.
+        self.client.force_login(self.stranger)
+        self.assertEqual(
+            self.client.post('/room/secret/kick/', {'username': 'owner'}).status_code, 403)
+        self.assertEqual(
+            self.client.post('/room/secret/update/', {'description': 'hack'}).status_code, 403)
+
+        # Owner kicks stranger and updates description.
+        self.client.force_login(self.owner)
+        kick = self.client.post('/room/secret/kick/', {'username': 'stranger'}).json()
+        self.assertTrue(kick['success'])
+        self.assertFalse(room.members.filter(pk=self.stranger.pk).exists())
+
+        upd = self.client.post(
+            '/room/secret/update/', {'description': 'Camera noua', 'is_private': 'on'},
+        ).json()
+        self.assertTrue(upd['success'])
+        room.refresh_from_db()
+        self.assertEqual(room.description, 'Camera noua')
+
+
+class RoomSearchViewTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user('searcher', password=STRONG)
+        self.room = ChatRoom.objects.create(name='general')
+        Message.objects.create(room=self.room, user=self.user, content='Salutare tuturor!')
+        Message.objects.create(room=self.room, user=self.user, content='Python si Django Channels')
+
+    def test_search_finds_matching_messages(self):
+        self.client.force_login(self.user)
+        data = self.client.get('/room/general/search/?q=django').json()
+        self.assertEqual(len(data['messages']), 1)
+        self.assertIn('Django', data['messages'][0]['message'])
+
+    def test_search_ignores_short_query(self):
+        self.client.force_login(self.user)
+        data = self.client.get('/room/general/search/?q=a').json()
+        self.assertEqual(data['messages'], [])
+
 
 class AccountManagementTests(TestCase):
     def setUp(self):

@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import json
 import re
 import time
 
@@ -14,15 +15,16 @@ from django.contrib.staticfiles import finders
 from django.core import signing
 from django.core.cache import cache
 from django.db import connections
-from django.db.models import Q
+from django.db.models import Count, Max, Q
 from django.http import Http404, HttpResponse, JsonResponse, HttpResponseForbidden
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
+from .consumers import _presence_list
 from .forms import RegistrationForm
-from .models import ChatRoom
+from .models import ALLOWED_REACTIONS, ChatRoom
 
 # How many messages a history page returns.
 HISTORY_PAGE_SIZE = 30
@@ -65,6 +67,21 @@ def _bump_rate(key, window):
         return 1
 
 
+def _serialize_message(m):
+    return {
+        'id': m.id,
+        'username': m.user.username,
+        'message': m.content,
+        'timestamp': timezone.localtime(m.timestamp).strftime('%H:%M'),
+        'iso': timezone.localtime(m.timestamp).isoformat(),
+        'edited': m.edited_at is not None,
+        'edited_iso': timezone.localtime(m.edited_at).isoformat() if m.edited_at else None,
+        'is_pinned': m.is_pinned,
+        'reply_to': m.serialize_reply(),
+        'reactions': m.serialize_reactions(),
+    }
+
+
 def index(request):
     """Pagina principală cu lista camerelor de chat"""
     rooms = ChatRoom.objects.all()
@@ -74,7 +91,18 @@ def index(request):
         ).distinct()
     else:
         rooms = rooms.filter(is_private=False)
-    return render(request, 'chat/index.html', {'rooms': rooms.order_by('-created_at')})
+    room_list = list(
+        rooms.select_related('owner')
+        .annotate(
+            message_count=Count('messages', distinct=True),
+            last_activity=Max('messages__timestamp'),
+        )
+        .order_by('-created_at')
+    )
+    for r in room_list:
+        r.online_users = _presence_list(f'chat_{r.name}')
+        r.online_count = len(r.online_users)
+    return render(request, 'chat/index.html', {'rooms': room_list})
 
 
 @login_required
@@ -86,14 +114,34 @@ def room(request, room_name):
         return redirect('chat:index')
     # Last page of messages, returned oldest-first for display.
     messages = list(
-        chat_room.messages.select_related('user').order_by('-id')[:HISTORY_PAGE_SIZE]
+        chat_room.messages
+        .select_related('user', 'reply_to__user')
+        .prefetch_related('reactions__user')
+        .order_by('-id')[:HISTORY_PAGE_SIZE]
     )
     messages.reverse()
+    for m in messages:
+        m.reactions_data = m.serialize_reactions()
+        m.reactions_json = json.dumps(m.reactions_data)
+
+    pinned_messages = list(
+        chat_room.messages.filter(is_pinned=True)
+        .select_related('user')
+        .order_by('-id')[:15]
+    )
+    room_members = []
+    if chat_room.is_private and chat_room.owner_id == request.user.id:
+        room_members = list(
+            chat_room.members.exclude(pk=request.user.pk).order_by('username')
+        )
 
     return render(request, 'chat/room.html', {
         'room_name': room_name,
         'chat_room': chat_room,
         'messages': messages,
+        'pinned_messages': pinned_messages,
+        'room_members': room_members,
+        'allowed_reactions': ALLOWED_REACTIONS,
     })
 
 
@@ -108,7 +156,11 @@ def room_messages(request, room_name):
     chat_room = get_object_or_404(ChatRoom, name=room_name)
     if not chat_room.can_access(request.user):
         return JsonResponse({'error': 'forbidden'}, status=403)
-    qs = chat_room.messages.select_related('user')
+    qs = (
+        chat_room.messages
+        .select_related('user', 'reply_to__user')
+        .prefetch_related('reactions__user')
+    )
 
     after = request.GET.get('after')
     before = request.GET.get('before')
@@ -123,17 +175,27 @@ def room_messages(request, room_name):
         has_more = len(page) == HISTORY_PAGE_SIZE
         page.reverse()
 
-    data = [
-        {
-            'id': m.id,
-            'username': m.user.username,
-            'message': m.content,
-            'timestamp': timezone.localtime(m.timestamp).strftime('%H:%M'),
-            'iso': timezone.localtime(m.timestamp).isoformat(),
-        }
-        for m in page
-    ]
+    data = [_serialize_message(m) for m in page]
     return JsonResponse({'messages': data, 'has_more': has_more})
+
+
+@login_required
+def room_search(request, room_name):
+    """Search message history inside a room by content or author username."""
+    chat_room = get_object_or_404(ChatRoom, name=room_name)
+    if not chat_room.can_access(request.user):
+        return JsonResponse({'error': 'forbidden'}, status=403)
+    query = (request.GET.get('q') or '').strip()
+    if len(query) < 2 or len(query) > 100:
+        return JsonResponse({'messages': []})
+    matches = list(
+        chat_room.messages
+        .select_related('user', 'reply_to__user')
+        .prefetch_related('reactions__user')
+        .filter(Q(content__icontains=query) | Q(user__username__icontains=query))
+        .order_by('-id')[:HISTORY_PAGE_SIZE]
+    )
+    return JsonResponse({'messages': [_serialize_message(m) for m in matches]})
 
 
 @login_required
@@ -194,7 +256,10 @@ def room_invite(request, room_name):
             status=429,
         )
     _bump_rate(rate_key, 3600)
-    token = signing.dumps(chat_room.name, salt=INVITE_SALT)
+    token = signing.dumps(
+        {'room': chat_room.name, 'v': chat_room.invite_version},
+        salt=INVITE_SALT,
+    )
     link = request.build_absolute_uri(reverse('chat:room_join', args=[token]))
     return JsonResponse({'success': True, 'invite_url': link})
 
@@ -203,14 +268,92 @@ def room_invite(request, room_name):
 def room_join(request, token):
     """Redeem an invite link: become a member of the private room."""
     try:
-        room_name = signing.loads(token, salt=INVITE_SALT, max_age=INVITE_MAX_AGE)
+        payload = signing.loads(token, salt=INVITE_SALT, max_age=INVITE_MAX_AGE)
     except signing.BadSignature:
         flash.error(request, 'Linkul de invitație este invalid sau a expirat.')
         return redirect('chat:index')
+    if isinstance(payload, dict):
+        room_name = payload.get('room', '')
+        token_version = payload.get('v', 1)
+    else:
+        room_name = str(payload)
+        token_version = 1
     chat_room = get_object_or_404(ChatRoom, name=room_name)
+    if token_version != chat_room.invite_version:
+        flash.error(request, 'Linkul de invitație a fost revocat de proprietar.')
+        return redirect('chat:index')
     chat_room.members.add(request.user)
     flash.success(request, f'Ai fost adăugat în camera {chat_room.name}.')
     return redirect('chat:room', room_name=chat_room.name)
+
+
+@login_required
+@require_http_methods(['POST'])
+def room_revoke_invites(request, room_name):
+    """Owner-only: rotate invite_version so all existing invite tokens stop working."""
+    chat_room = get_object_or_404(ChatRoom, name=room_name)
+    if chat_room.owner_id != request.user.id:
+        return JsonResponse(
+            {'success': False, 'error': 'Doar proprietarul poate revoca invitațiile.'},
+            status=403,
+        )
+    chat_room.invite_version += 1
+    chat_room.save(update_fields=['invite_version'])
+    return JsonResponse({'success': True, 'invite_version': chat_room.invite_version})
+
+
+@login_required
+@require_http_methods(['POST'])
+def room_kick_member(request, room_name):
+    """Owner-only: remove a member from a private room and evict their live socket."""
+    chat_room = get_object_or_404(ChatRoom, name=room_name)
+    if chat_room.owner_id != request.user.id:
+        return JsonResponse(
+            {'success': False, 'error': 'Doar proprietarul poate elimina membri.'},
+            status=403,
+        )
+    username = (request.POST.get('username') or '').strip()
+    if not username or username == request.user.username:
+        return JsonResponse(
+            {'success': False, 'error': 'Utilizator invalid pentru eliminare.'},
+            status=400,
+        )
+    target = chat_room.members.filter(username=username).first()
+    if target is None:
+        return JsonResponse(
+            {'success': False, 'error': 'Utilizatorul nu este membru al camerei.'},
+            status=404,
+        )
+    chat_room.members.remove(target)
+    async_to_sync(get_channel_layer().group_send)(
+        f'chat_{chat_room.name}',
+        {'type': 'member_kicked', 'username': target.username},
+    )
+    return JsonResponse({'success': True, 'username': target.username})
+
+
+@login_required
+@require_http_methods(['POST'])
+def room_update(request, room_name):
+    """Owner-only: update room description or privacy status."""
+    chat_room = get_object_or_404(ChatRoom, name=room_name)
+    if chat_room.owner_id != request.user.id:
+        return JsonResponse(
+            {'success': False, 'error': 'Doar proprietarul poate modifica setările camerei.'},
+            status=403,
+        )
+    if 'description' in request.POST:
+        chat_room.description = request.POST.get('description', '').strip()[:1000]
+    if 'is_private' in request.POST:
+        chat_room.is_private = request.POST.get('is_private') in ('on', 'true', '1')
+        if chat_room.is_private:
+            chat_room.members.add(request.user)
+    chat_room.save(update_fields=['description', 'is_private'])
+    return JsonResponse({
+        'success': True,
+        'description': chat_room.description,
+        'is_private': chat_room.is_private,
+    })
 
 
 @login_required

@@ -11,7 +11,7 @@ from channels.db import database_sync_to_async
 from django.conf import settings
 from django.utils import timezone
 
-from .models import ChatRoom, Message
+from .models import ALLOWED_REACTIONS, ChatRoom, Message, MessageReaction
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,9 @@ RATE_LIMITS = {
     'signal': (200, 10.0),
     'call': (20, 10.0),
     'delete': (10, 10.0),
+    'edit': (15, 10.0),
+    'react': (30, 10.0),
+    'pin': (10, 10.0),
 }
 
 # --- Presence ---------------------------------------------------------------
@@ -260,6 +263,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'call_present': self.handle_call_present,
             'typing': self.handle_typing,
             'delete_message': self.handle_delete_message,
+            'edit_message': self.handle_edit_message,
+            'react_message': self.handle_react_message,
+            'pin_message': self.handle_pin_message,
         }
         handler = handlers.get(message_type)
         if handler is not None:
@@ -278,9 +284,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.send_error('Trimiți mesaje prea repede. Așteaptă o secundă.')
             return
 
-        saved = await self.save_message(message)
+        raw_reply = data.get('reply_to')
+        reply_to_id = raw_reply if isinstance(raw_reply, int) and raw_reply > 0 else None
+        saved, reply_data = await self.save_message(message, reply_to_id)
         if saved is None:
-            return  # room vanished mid-session; nothing to broadcast
+            return  # room vanished or access revoked mid-session
         await self.channel_layer.group_send(
             self.room_group_name,
             {
@@ -290,6 +298,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'username': self.user.username,
                 'timestamp': self.get_timestamp(),
                 'iso': timezone.localtime(saved.timestamp).isoformat(),
+                'reply_to': reply_data,
+                'edited': False,
+                'is_pinned': False,
+                'reactions': [],
             },
         )
 
@@ -380,6 +392,64 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 {'type': 'message_deleted', 'id': message_id},
             )
 
+    async def handle_edit_message(self, data):
+        """Edit one of your own messages and broadcast the updated content."""
+        if self.is_rate_limited('edit'):
+            return
+        message_id = data.get('id')
+        new_content = (data.get('message') or '').strip()
+        if not isinstance(message_id, int) or message_id <= 0 or not new_content:
+            return
+        if len(new_content) > MAX_MESSAGE_LENGTH:
+            await self.send_error(f'Mesajul depășește {MAX_MESSAGE_LENGTH} de caractere.')
+            return
+        edited_iso = await self.edit_own_message(message_id, new_content)
+        if edited_iso:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'message_edited',
+                    'id': message_id,
+                    'message': new_content,
+                    'edited_iso': edited_iso,
+                },
+            )
+
+    async def handle_react_message(self, data):
+        """Toggle an emoji reaction on a message in the current room."""
+        if self.is_rate_limited('react'):
+            return
+        message_id = data.get('id')
+        emoji = data.get('emoji')
+        if not isinstance(message_id, int) or message_id <= 0:
+            return
+        if not isinstance(emoji, str) or emoji not in ALLOWED_REACTIONS:
+            return
+        reactions = await self.toggle_reaction(message_id, emoji)
+        if reactions is not None:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'message_reactions',
+                    'id': message_id,
+                    'reactions': reactions,
+                },
+            )
+
+    async def handle_pin_message(self, data):
+        """Room owner (or staff): toggle pinned status of a message."""
+        if self.is_rate_limited('pin'):
+            return
+        message_id = data.get('id')
+        if not isinstance(message_id, int) or message_id <= 0:
+            return
+        result = await self.toggle_pin_message(message_id)
+        if result is not None:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'message_pinned', **result},
+            )
+
     async def handle_typing(self, data):
         if self.is_rate_limited('typing'):
             return
@@ -401,7 +471,51 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'username': event['username'],
             'timestamp': event['timestamp'],
             'iso': event['iso'],
+            'reply_to': event.get('reply_to'),
+            'edited': event.get('edited', False),
+            'is_pinned': event.get('is_pinned', False),
+            'reactions': event.get('reactions', []),
         }))
+
+    async def message_edited(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'message_edited',
+            'id': event['id'],
+            'message': event['message'],
+            'edited': True,
+            'edited_iso': event['edited_iso'],
+        }))
+
+    async def message_reactions(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'message_reactions',
+            'id': event['id'],
+            'reactions': event['reactions'],
+        }))
+
+    async def message_pinned(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'message_pinned',
+            'id': event['id'],
+            'is_pinned': event['is_pinned'],
+            'username': event['username'],
+            'message': event['message'],
+            'pinned_by': event['pinned_by'],
+        }))
+
+    async def member_kicked(self, event):
+        if self.user.username == event['username']:
+            await self.send(text_data=json.dumps({
+                'type': 'member_kicked',
+                'error': 'Ai fost eliminat din această cameră de proprietar.',
+            }))
+            await self.close(code=4403)
+        else:
+            await self.send(text_data=json.dumps({
+                'type': 'user_leave',
+                'username': event['username'],
+                'message': f"{event['username']} a fost eliminat din cameră",
+            }))
 
     async def user_join(self, event):
         await self.send(text_data=json.dumps({
@@ -505,12 +619,81 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return deleted > 0
 
     @database_sync_to_async
-    def save_message(self, message):
+    def edit_own_message(self, message_id, new_content):
+        msg = Message.objects.filter(
+            id=message_id, user=self.user, room__name=self.room_name,
+        ).select_related('room').first()
+        if msg is None or not msg.room.can_access(self.user):
+            return None
+        now = timezone.now()
+        msg.content = new_content
+        msg.edited_at = now
+        msg.save(update_fields=['content', 'edited_at'])
+        return timezone.localtime(now).isoformat()
+
+    @database_sync_to_async
+    def toggle_reaction(self, message_id, emoji):
+        msg = (
+            Message.objects
+            .filter(id=message_id, room__name=self.room_name)
+            .select_related('room')
+            .first()
+        )
+        if msg is None or not msg.room.can_access(self.user):
+            return None
+        deleted, _ = MessageReaction.objects.filter(
+            message=msg, user=self.user, emoji=emoji,
+        ).delete()
+        if not deleted:
+            MessageReaction.objects.create(message=msg, user=self.user, emoji=emoji)
+        # Re-read reactions with users to serialize the updated list.
+        msg_with_reactions = (
+            Message.objects.filter(pk=msg.pk)
+            .prefetch_related('reactions__user')
+            .first()
+        )
+        return msg_with_reactions.serialize_reactions() if msg_with_reactions else []
+
+    @database_sync_to_async
+    def toggle_pin_message(self, message_id):
+        msg = (
+            Message.objects
+            .filter(id=message_id, room__name=self.room_name)
+            .select_related('room', 'user')
+            .first()
+        )
+        if msg is None:
+            return None
+        if msg.room.owner_id != self.user.id and not self.user.is_staff:
+            return None
+        msg.is_pinned = not msg.is_pinned
+        msg.save(update_fields=['is_pinned'])
+        return {
+            'id': msg.id,
+            'is_pinned': msg.is_pinned,
+            'username': msg.user.username,
+            'message': msg.content[:180],
+            'pinned_by': self.user.username,
+        }
+
+    @database_sync_to_async
+    def save_message(self, message, reply_to_id=None):
         room = ChatRoom.objects.filter(name=self.room_name).first()
         if room is None or not room.can_access(self.user):
             # Room was deleted or private access was revoked mid-session.
-            return None
-        return Message.objects.create(room=room, user=self.user, content=message)
+            return None, None
+        reply_parent = None
+        if reply_to_id is not None:
+            reply_parent = (
+                Message.objects
+                .filter(id=reply_to_id, room=room)
+                .select_related('user')
+                .first()
+            )
+        saved = Message.objects.create(
+            room=room, user=self.user, content=message, reply_to=reply_parent,
+        )
+        return saved, saved.serialize_reply()
 
     @staticmethod
     def get_timestamp():

@@ -19,7 +19,7 @@ def application():
     return URLRouter(chat.routing.websocket_urlpatterns)
 
 
-async def drain(comm, timeout=0.3):
+async def drain(comm, timeout=0.06):
     out = []
     while True:
         try:
@@ -410,4 +410,59 @@ class ChatConsumerTests(TransactionTestCase):
             count = await sync_to_async(Message.objects.filter(room=room).count)()
             self.assertEqual(count, 0)
             await j.disconnect()
+        async_to_sync(body)()
+
+    def test_reply_edit_react_and_pin_message_flows(self):
+        async def body():
+            self.room.owner = self.ana
+            await sync_to_async(self.room.save)()
+            a, _, _ = await self._connect(self.ana)
+            b, _, _ = await self._connect(self.john)
+            await drain(a); await drain(b)
+
+            # 1) Send initial message.
+            await a.send_json_to({'message': 'primul mesaj'})
+            m1 = next(m for m in await drain(a) if m.get('type') == 'message')
+            await drain(b)
+
+            # 2) Reply to m1.
+            await b.send_json_to({'message': 'raspuns la primul', 'reply_to': m1['id']})
+            reply_msg = next(m for m in await drain(a) if m.get('type') == 'message')
+            await drain(b)
+            self.assertIsNotNone(reply_msg['reply_to'])
+            self.assertEqual(reply_msg['reply_to']['id'], m1['id'])
+            self.assertEqual(reply_msg['reply_to']['username'], 'ana')
+
+            # 3) Edit own message (ana edits m1; john cannot edit m1).
+            await b.send_json_to({'type': 'edit_message', 'id': m1['id'], 'message': 'hacked'})
+            self.assertFalse(any(m.get('type') == 'message_edited' for m in await drain(a)))
+
+            await a.send_json_to({'type': 'edit_message', 'id': m1['id'], 'message': 'primul editat'})
+            b_edit = next(m for m in await drain(b) if m.get('type') == 'message_edited')
+            await drain(a)
+            self.assertEqual(b_edit['id'], m1['id'])
+            self.assertEqual(b_edit['message'], 'primul editat')
+
+            # 4) React to m1 (toggle on, then toggle off).
+            await b.send_json_to({'type': 'react_message', 'id': m1['id'], 'emoji': '🔥'})
+            b_react = next(m for m in await drain(a) if m.get('type') == 'message_reactions')
+            await drain(b)
+            self.assertEqual(b_react['reactions'], [{'emoji': '🔥', 'count': 1, 'users': ['john']}])
+
+            await b.send_json_to({'type': 'react_message', 'id': m1['id'], 'emoji': '🔥'})
+            b_unreact = next(m for m in await drain(a) if m.get('type') == 'message_reactions')
+            await drain(b)
+            self.assertEqual(b_unreact['reactions'], [])
+
+            # 5) Pin message (john is not owner -> ignored; ana is owner -> pinned).
+            await b.send_json_to({'type': 'pin_message', 'id': m1['id']})
+            self.assertFalse(any(m.get('type') == 'message_pinned' for m in await drain(a)))
+
+            await a.send_json_to({'type': 'pin_message', 'id': m1['id']})
+            b_pin = next(m for m in await drain(b) if m.get('type') == 'message_pinned')
+            await drain(a)
+            self.assertTrue(b_pin['is_pinned'])
+            self.assertEqual(b_pin['id'], m1['id'])
+
+            await a.disconnect(); await b.disconnect()
         async_to_sync(body)()
