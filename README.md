@@ -15,7 +15,11 @@ video de grup (mesh WebRTC) cu partajare de ecran.
 - **Reacții cu Emoji** (`👍`, `❤️`, `😂`, `🔥`, `😮`, `😢`, `🎉`, `💯`) contorizate live
 - **Mesaje fixate (Pinned Messages)** gestionate de proprietarul camerei / staff
 - **Formatare Rich-Text 100% XSS-Safe**: blocuri de cod, cod inline, `**bold**`, `*italic*`, auto-link URL-uri și **mențiuni `@username`** cu autocomplete și alertă sonoră dedicată
-- **Comenzi rapide (`/slash commands`)**: `/shrug`, `/me`, `/roll [NdM]`, `/clear`, `/help`
+- **Comenzi rapide (`/slash commands`)**: `/shrug`, `/me`, `/roll [NdM]`, `/poll Întrebare? | Op1 | Op2`, `/topic <text>`, `/clear`, `/help`
+- **Sondaje Live (Interactive Polls)** direct în cameră, cu vot în timp real, procente și închidere sondaj
+- **Mesaje Directe (1-on-1 DM)** cu un singur click pe profilul oricărui participant online (`/dm/<username>/`)
+- **Profil utilizator & Statistici (`/account/profile/`)**: status personalizat (emoji + text), bio, culoare avatar custom și **export self-service al datelor personale JSON (`/account/export/`)**
+- **Topic / Anunț live pe cameră** și **export transcript conversație** (`.txt` sau `.json` la `/room/<name>/export/`)
 - **Căutare instantă în mesaje** (`/room/<name>/search/?q=...`) și filtrare/căutare camere în lobby
 - Camere **private** cu link-uri de invitație semnate (expiră în 7 zile), **revocare instantă a tuturor invitațiilor**, **eliminare (kick) membri cu deconectare live din WebSocket**, editare descriere/vizibilitate și ștergere de cameră
 - Ștergerea propriilor mesaje (hard delete, broadcast în cameră)
@@ -25,7 +29,7 @@ video de grup (mesh WebRTC) cu partajare de ecran.
 - Schimbare parolă și **ștergere de cont self-service** (mesajele și camerele private deținute se șterg în cascadă)
 - Notificări sonore și desktop (opt-in), auto-reconnect WebSocket
 - Temă light/dark, design responsive (mobile-first cu drawer rapid pe telefon), **PWA instalabilă**
-- Apel video **de grup** (mesh WebRTC, perfect negotiation, cap configurabil), partajare de ecran, fullscreen și wake lock pe mobil
+- Apel video **de grup** (mesh WebRTC, perfect negotiation, cap configurabil), **mod Doar Audio (voice chat)**, **Ridică mâna (✋)** în apel, partajare de ecran, fullscreen și wake lock pe mobil
 - **SEO & Discovery complet**: `/robots.txt`, `/sitemap.xml` dinamic (doar camerele publice), `/.well-known/security.txt`, Open Graph, Twitter Cards, URL-uri canonice, JSON-LD `WebApplication` și `noindex` automat pe camerele private
 - Panel de administrare Django
 

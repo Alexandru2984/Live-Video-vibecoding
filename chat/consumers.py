@@ -11,7 +11,15 @@ from channels.db import database_sync_to_async
 from django.conf import settings
 from django.utils import timezone
 
-from .models import ALLOWED_REACTIONS, ChatRoom, Message, MessageReaction
+from .models import (
+    ALLOWED_REACTIONS,
+    ChatRoom,
+    Message,
+    MessageReaction,
+    Poll,
+    PollOption,
+    PollVote,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +43,8 @@ RATE_LIMITS = {
     'edit': (15, 10.0),
     'react': (30, 10.0),
     'pin': (10, 10.0),
+    'poll': (10, 10.0),
+    'topic': (10, 10.0),
 }
 
 # --- Presence ---------------------------------------------------------------
@@ -261,11 +271,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'call_join': self.handle_call_join,
             'call_leave': self.handle_call_leave,
             'call_present': self.handle_call_present,
+            'call_hand': self.handle_call_hand,
             'typing': self.handle_typing,
             'delete_message': self.handle_delete_message,
             'edit_message': self.handle_edit_message,
             'react_message': self.handle_react_message,
             'pin_message': self.handle_pin_message,
+            'create_poll': self.handle_create_poll,
+            'vote_poll': self.handle_vote_poll,
+            'close_poll': self.handle_close_poll,
+            'set_topic': self.handle_set_topic,
         }
         handler = handlers.get(message_type)
         if handler is not None:
@@ -379,6 +394,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 'peer': self.peer_id,
             })
 
+    async def handle_call_hand(self, data):
+        """Broadcast hand-raise state while participating in a call."""
+        if self.is_rate_limited('call') or not self.in_call:
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'call_hand',
+                'username': self.user.username,
+                'peer': self.peer_id,
+                'raised': bool(data.get('raised')),
+            },
+        )
+
     async def handle_delete_message(self, data):
         """Delete one of your own messages (hard delete) and tell the room."""
         if self.is_rate_limited('delete'):
@@ -448,6 +477,78 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {'type': 'message_pinned', **result},
+            )
+
+    async def handle_create_poll(self, data):
+        """Create an interactive live poll in the room."""
+        if self.is_rate_limited('poll'):
+            return
+        question = (data.get('question') or '').strip()
+        raw_options = data.get('options')
+        if not question or len(question) > 250 or not isinstance(raw_options, list):
+            return
+        cleaned = []
+        seen = set()
+        for opt in raw_options:
+            if not isinstance(opt, str):
+                continue
+            t = opt.strip()[:120]
+            if t and t.lower() not in seen:
+                seen.add(t.lower())
+                cleaned.append(t)
+        if len(cleaned) < 2 or len(cleaned) > 6:
+            await self.send_error('Sondajul trebuie să aibă între 2 și 6 opțiuni distincte.')
+            return
+        poll_data = await self.create_poll_db(question, cleaned)
+        if poll_data is not None:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'poll_update', 'poll': poll_data, 'is_new': True},
+            )
+
+    async def handle_vote_poll(self, data):
+        """Cast or switch your vote on an active poll in the room."""
+        if self.is_rate_limited('poll'):
+            return
+        poll_id = data.get('poll_id')
+        option_id = data.get('option_id')
+        if not isinstance(poll_id, int) or not isinstance(option_id, int):
+            return
+        poll_data = await self.vote_poll_db(poll_id, option_id)
+        if poll_data is not None:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'poll_update', 'poll': poll_data, 'is_new': False},
+            )
+
+    async def handle_close_poll(self, data):
+        """Close an active poll (poll creator, room owner, or staff)."""
+        if self.is_rate_limited('poll'):
+            return
+        poll_id = data.get('poll_id')
+        if not isinstance(poll_id, int):
+            return
+        poll_data = await self.close_poll_db(poll_id)
+        if poll_data is not None:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {'type': 'poll_update', 'poll': poll_data, 'is_new': False},
+            )
+
+    async def handle_set_topic(self, data):
+        """Room owner (or staff): update the room's live topic banner."""
+        if self.is_rate_limited('topic'):
+            return
+        topic = (data.get('topic') or '').strip()[:250]
+        updated = await self.set_room_topic_db(topic)
+        if updated is not None:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'room_topic',
+                    'topic': updated,
+                    'updated_by': self.user.username,
+                },
             )
 
     async def handle_typing(self, data):
@@ -581,6 +682,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'peer': event['peer'],
         }))
 
+    async def call_hand(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'call_hand',
+            'username': event['username'],
+            'peer': event['peer'],
+            'raised': event['raised'],
+        }))
+
+    async def poll_update(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'poll_update',
+            'poll': event['poll'],
+            'is_new': event['is_new'],
+        }))
+
+    async def room_topic(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'room_topic',
+            'topic': event['topic'],
+            'updated_by': event['updated_by'],
+        }))
+
     # -- helpers ------------------------------------------------------------
     async def send_to_peer(self, peer_id, message):
         await self.channel_layer.group_send(
@@ -694,6 +817,86 @@ class ChatConsumer(AsyncWebsocketConsumer):
             room=room, user=self.user, content=message, reply_to=reply_parent,
         )
         return saved, saved.serialize_reply()
+
+    @database_sync_to_async
+    def create_poll_db(self, question, options):
+        room = ChatRoom.objects.filter(name=self.room_name).first()
+        if room is None or not room.can_access(self.user):
+            return None
+        poll = Poll.objects.create(room=room, creator=self.user, question=question)
+        PollOption.objects.bulk_create([
+            PollOption(poll=poll, text=opt_text) for opt_text in options
+        ])
+        poll_full = (
+            Poll.objects.filter(pk=poll.pk)
+            .select_related('creator')
+            .prefetch_related('options__votes__user')
+            .first()
+        )
+        return poll_full.serialize() if poll_full else None
+
+    @database_sync_to_async
+    def vote_poll_db(self, poll_id, option_id):
+        poll = (
+            Poll.objects.filter(id=poll_id, room__name=self.room_name)
+            .select_related('room', 'creator')
+            .first()
+        )
+        if poll is None or poll.is_closed or not poll.room.can_access(self.user):
+            return None
+        option = PollOption.objects.filter(id=option_id, poll=poll).first()
+        if option is None:
+            return None
+        existing = PollVote.objects.filter(poll=poll, user=self.user).first()
+        if existing and existing.option_id == option.id:
+            existing.delete()
+        else:
+            PollVote.objects.update_or_create(
+                poll=poll, user=self.user, defaults={'option': option},
+            )
+        poll_full = (
+            Poll.objects.filter(pk=poll.pk)
+            .select_related('creator')
+            .prefetch_related('options__votes__user')
+            .first()
+        )
+        return poll_full.serialize() if poll_full else None
+
+    @database_sync_to_async
+    def close_poll_db(self, poll_id):
+        poll = (
+            Poll.objects.filter(id=poll_id, room__name=self.room_name)
+            .select_related('room', 'creator')
+            .first()
+        )
+        if poll is None:
+            return None
+        if (
+            poll.creator_id != self.user.id
+            and poll.room.owner_id != self.user.id
+            and not self.user.is_staff
+        ):
+            return None
+        poll.is_closed = True
+        poll.save(update_fields=['is_closed'])
+        poll_full = (
+            Poll.objects.filter(pk=poll.pk)
+            .select_related('creator')
+            .prefetch_related('options__votes__user')
+            .first()
+        )
+        return poll_full.serialize() if poll_full else None
+
+    @database_sync_to_async
+    def set_room_topic_db(self, topic):
+        room = ChatRoom.objects.filter(name=self.room_name).first()
+        if room is None:
+            return None
+        if room.owner_id != self.user.id and not self.user.is_staff:
+            return None
+        room.topic = topic
+        room.save(update_fields=['topic'])
+        return room.topic
 
     @staticmethod
     def get_timestamp():

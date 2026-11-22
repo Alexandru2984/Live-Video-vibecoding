@@ -71,6 +71,7 @@ X_FRAME_OPTIONS = 'DENY'
 
 # TLS redirect is handled at the nginx layer; enabling it here would loop.
 SECURE_SSL_REDIRECT = False
+SILENCED_SYSTEM_CHECKS = ['security.W008']
 if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True

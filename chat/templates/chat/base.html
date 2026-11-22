@@ -169,6 +169,11 @@
                             <span class="d-none d-sm-inline">{{ user.username }}</span>
                         </button>
                         <ul class="dropdown-menu dropdown-menu-end">
+                            <li><a class="dropdown-item" href="{% url 'chat:profile' %}">
+                                <i class="bi bi-person-badge"></i> Profil &amp; Statistici</a></li>
+                            <li><a class="dropdown-item" href="{% url 'chat:account_export' %}">
+                                <i class="bi bi-download"></i> Exportă datele mele</a></li>
+                            <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item" href="{% url 'chat:password_change' %}">
                                 <i class="bi bi-key"></i> Schimbă parola</a></li>
                             <li><a class="dropdown-item text-danger" href="{% url 'chat:delete_account' %}">

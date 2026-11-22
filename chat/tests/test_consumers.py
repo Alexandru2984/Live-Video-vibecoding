@@ -466,3 +466,60 @@ class ChatConsumerTests(TransactionTestCase):
 
             await a.disconnect(); await b.disconnect()
         async_to_sync(body)()
+
+    def test_poll_topic_and_call_hand_flows(self):
+        async def body():
+            self.room.owner = self.ana
+            await sync_to_async(self.room.save)()
+            a, _, _ = await self._connect(self.ana)
+            b, _, _ = await self._connect(self.john)
+            await drain(a); await drain(b)
+
+            # 1) Create a live poll.
+            await a.send_json_to({
+                'type': 'create_poll',
+                'question': 'Limbaj preferat?',
+                'options': ['Python', 'Rust'],
+            })
+            poll_msg = next(m for m in await drain(b) if m.get('type') == 'poll_update')
+            await drain(a)
+            self.assertTrue(poll_msg['is_new'])
+            poll_id = poll_msg['poll']['id']
+            opt_id = poll_msg['poll']['options'][0]['id']
+
+            # 2) Vote on the poll.
+            await b.send_json_to({
+                'type': 'vote_poll',
+                'poll_id': poll_id,
+                'option_id': opt_id,
+            })
+            vote_msg = next(m for m in await drain(a) if m.get('type') == 'poll_update')
+            await drain(b)
+            self.assertEqual(vote_msg['poll']['total_votes'], 1)
+            self.assertEqual(vote_msg['poll']['options'][0]['voters'], ['john'])
+
+            # 3) Close poll.
+            await a.send_json_to({'type': 'close_poll', 'poll_id': poll_id})
+            close_msg = next(m for m in await drain(b) if m.get('type') == 'poll_update')
+            await drain(a)
+            self.assertTrue(close_msg['poll']['is_closed'])
+
+            # 4) Set room topic (owner allowed; non-owner ignored).
+            await b.send_json_to({'type': 'set_topic', 'topic': 'nope'})
+            self.assertFalse(any(m.get('type') == 'room_topic' for m in await drain(a)))
+
+            await a.send_json_to({'type': 'set_topic', 'topic': 'Anunt important'})
+            topic_msg = next(m for m in await drain(b) if m.get('type') == 'room_topic')
+            await drain(a)
+            self.assertEqual(topic_msg['topic'], 'Anunt important')
+
+            # 5) Hand raise in call.
+            await a.send_json_to({'type': 'call_join'})
+            await drain(a); await drain(b)
+            await a.send_json_to({'type': 'call_hand', 'raised': True})
+            hand_msg = next(m for m in await drain(b) if m.get('type') == 'call_hand')
+            self.assertTrue(hand_msg['raised'])
+            self.assertEqual(hand_msg['username'], 'ana')
+
+            await a.disconnect(); await b.disconnect()
+        async_to_sync(body)()

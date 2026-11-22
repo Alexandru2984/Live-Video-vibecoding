@@ -274,6 +274,18 @@
             <i class="bi bi-pin-angle-fill"></i>
             <span id="pinnedCountBadge">{{ pinned_messages|length }}</span>
         </button>
+        <div class="dropdown d-inline-block">
+            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                    data-bs-toggle="dropdown" aria-expanded="false" title="Exportă conversația">
+                <i class="bi bi-download"></i>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+                <li><a class="dropdown-item small" href="{% url 'chat:room_export' room_name %}?format=txt">
+                    <i class="bi bi-file-earmark-text"></i> Transcript (.txt)</a></li>
+                <li><a class="dropdown-item small" href="{% url 'chat:room_export' room_name %}?format=json">
+                    <i class="bi bi-filetype-json"></i> Arhivă (.json)</a></li>
+            </ul>
+        </div>
         <button id="mobileSidebarBtn" type="button" class="btn btn-sm btn-outline-primary d-lg-none"
                 data-bs-toggle="collapse" data-bs-target="#sidebarColumn" aria-expanded="false"
                 title="Utilizatori online și setări">
@@ -304,6 +316,10 @@
 <div id="roomDescriptionBanner" class="alert alert-info py-2 small mb-2 {% if not chat_room.description %}d-none{% endif %}">
     <i class="bi bi-info-circle"></i> <span id="roomDescriptionText">{{ chat_room.description }}</span>
 </div>
+<div id="roomTopicBanner" class="alert alert-warning py-1 px-3 small mb-2 d-flex align-items-center justify-content-between {% if not chat_room.topic %}d-none{% endif %}">
+    <div><i class="bi bi-megaphone-fill me-1"></i> <strong>Topic:</strong> <span id="roomTopicText">{{ chat_room.topic }}</span></div>
+</div>
+<div id="pollsContainer" class="mb-2 d-flex flex-column gap-2"></div>
 
 <div class="row g-3">
     <div class="col-lg-8">
@@ -442,8 +458,12 @@
                         <button class="btn btn-outline-secondary" type="button" id="emojiBtn" title="Emoji">
                             <i class="bi bi-emoji-smile"></i>
                         </button>
+                        <button class="btn btn-outline-secondary" type="button" id="openPollModalBtn"
+                                data-bs-toggle="modal" data-bs-target="#createPollModal" title="Creează sondaj live">
+                            <i class="bi bi-bar-chart-fill"></i>
+                        </button>
                         <input type="text" id="chat-message-input" class="form-control"
-                               placeholder="Scrie un mesaj, @nume sau /help…" autocomplete="off" maxlength="2000">
+                               placeholder="Scrie un mesaj, @nume, /poll sau /help…" autocomplete="off" maxlength="2000">
                         <button class="btn btn-brand" type="button" id="chat-message-submit">
                             <i class="bi bi-send"></i><span class="d-none d-sm-inline"> Trimite</span>
                         </button>
@@ -495,9 +515,15 @@
             <i class="bi bi-camera-video text-primary"></i> Video chat
             <span class="badge text-bg-secondary ms-1" id="callCount" title="Participanți în apel">0</span>
         </span>
-        <div class="d-flex align-items-center gap-2">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
             <span class="badge text-bg-secondary" id="videoStatus">Neconectat</span>
             {% if user.is_authenticated %}
+            <button id="toggleHandBtn" type="button" class="btn btn-sm btn-outline-warning d-none" title="Ridică mâna în apel">
+                ✋ <span class="d-none d-sm-inline">Ridică mâna</span>
+            </button>
+            <button id="joinAudioOnlyBtn" type="button" class="btn btn-sm btn-outline-success" title="Intră doar cu microfonul (fără cameră)">
+                <i class="bi bi-headphones"></i> Doar Audio
+            </button>
             <button id="toggleCall" class="btn btn-sm btn-success">
                 <i class="bi bi-camera-video"></i> Intră în apel
             </button>
@@ -543,6 +569,11 @@
                         <label for="editRoomDescription" class="form-label">Descrierea camerei</label>
                         <textarea id="editRoomDescription" name="description" class="form-control" rows="2" maxlength="1000">{{ chat_room.description }}</textarea>
                     </div>
+                    <div class="mb-3">
+                        <label for="editRoomTopic" class="form-label">Topic / Anunț live</label>
+                        <input type="text" id="editRoomTopic" name="topic" class="form-control" maxlength="250"
+                               value="{{ chat_room.topic }}" placeholder="ex: Ședință la 18:00">
+                    </div>
                     <div class="form-check form-switch mb-3">
                         <input class="form-check-input" type="checkbox" id="editRoomPrivate" name="is_private" {% if chat_room.is_private %}checked{% endif %}>
                         <label class="form-check-label" for="editRoomPrivate">
@@ -587,6 +618,70 @@
 {% endif %}
 
 <script id="room-name" type="application/json" nonce="{{ csp_nonce }}">"{{ room_name|escapejs }}"</script>
+<script id="initial-polls" type="application/json" nonce="{{ csp_nonce }}">{{ room_polls_json|default:"[]"|safe }}</script>
+<form id="globalCsrfForm" class="d-none">{% csrf_token %}</form>
+
+<!-- Create Poll Modal -->
+<div class="modal fade" id="createPollModal" tabindex="-1" aria-labelledby="createPollModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="createPollModalLabel"><i class="bi bi-bar-chart-fill text-primary"></i> Creează sondaj live</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Închide"></button>
+            </div>
+            <div class="modal-body">
+                <form id="createPollForm">
+                    <div class="mb-3">
+                        <label for="pollQuestion" class="form-label">Întrebare</label>
+                        <input type="text" id="pollQuestion" class="form-control" maxlength="250"
+                               placeholder="ex: Ce tehnologie preferați?" required>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Opțiuni (2 - 4)</label>
+                        <input type="text" class="form-control form-control-sm mb-2 poll-opt-input" maxlength="120" placeholder="Opțiunea 1" required>
+                        <input type="text" class="form-control form-control-sm mb-2 poll-opt-input" maxlength="120" placeholder="Opțiunea 2" required>
+                        <input type="text" class="form-control form-control-sm mb-2 poll-opt-input" maxlength="120" placeholder="Opțiunea 3 (opțional)">
+                        <input type="text" class="form-control form-control-sm poll-opt-input" maxlength="120" placeholder="Opțiunea 4 (opțional)">
+                    </div>
+                    <div class="d-grid mt-3">
+                        <button type="submit" class="btn btn-brand">
+                            <i class="bi bi-send"></i> Publică sondajul în cameră
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- User Profile & Direct Message Modal -->
+<div class="modal fade" id="userProfileModal" tabindex="-1" aria-labelledby="userProfileModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header border-0 pb-0">
+                <h6 class="modal-title" id="userProfileModalLabel">Profil utilizator</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Închide"></button>
+            </div>
+            <div class="modal-body text-center pt-1">
+                <div id="modalUserAvatar" class="user-avatar mx-auto mb-2" style="width: 56px; height: 56px; font-size: 1.3rem;">?</div>
+                <h5 id="modalUserName" class="mb-1"></h5>
+                <div id="modalUserStatus" class="badge bg-primary-subtle text-primary-emphasis mb-2 d-none"></div>
+                <p id="modalUserBio" class="small text-body-secondary mb-2"></p>
+                <div class="small text-body-secondary mb-3">
+                    <span id="modalUserMsgs">0</span> mesaje · membru din <span id="modalUserJoined">-</span>
+                </div>
+                <div class="d-grid gap-2">
+                    <button type="button" id="modalMentionBtn" class="btn btn-sm btn-outline-primary" data-bs-dismiss="modal">
+                        <i class="bi bi-at"></i> Menționează în cameră
+                    </button>
+                    <button type="button" id="modalDmBtn" class="btn btn-sm btn-brand">
+                        <i class="bi bi-chat-heart"></i> Mesaj privat (DM)
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -1053,9 +1148,7 @@
             name.textContent = u + (u === userName ? ' (tu)' : '');
             li.append(dot, av, name);
             li.addEventListener('click', function () {
-                if (!messageInput) return;
-                messageInput.value += (messageInput.value && !messageInput.value.endsWith(' ') ? ' ' : '') + '@' + u + ' ';
-                messageInput.focus();
+                openUserProfile(u);
             });
             userList.appendChild(li);
         });
@@ -1182,6 +1275,9 @@
                 case 'message_reactions': handleMessageReactions(data); break;
                 case 'message_pinned': handleMessagePinned(data); break;
                 case 'message_deleted': removeMessage(data.id); break;
+                case 'poll_update': renderPollCard(data.poll); break;
+                case 'room_topic': handleRoomTopic(data); break;
+                case 'call_hand': handleCallHand(data); break;
                 case 'member_kicked':
                     stopped = true;
                     showError(data.error || 'Ai fost eliminat din cameră.');
@@ -1303,6 +1399,17 @@
         if (text === '/clear') {
             chatLog.replaceChildren();
             return null;
+        }
+        if (text.startsWith('/topic ') && isRoomOwnerOrStaff) {
+            send({ type: 'set_topic', topic: text.slice(7).trim() });
+            return null;
+        }
+        if (text.startsWith('/poll ')) {
+            const parts = text.slice(6).split('|').map(function (s) { return s.trim(); }).filter(Boolean);
+            if (parts.length >= 3) {
+                send({ type: 'create_poll', question: parts[0], options: parts.slice(1, 7) });
+                return null;
+            }
         }
         if (text === '/shrug' || text.startsWith('/shrug ')) {
             const rest = text.slice(6).trim();
@@ -1798,15 +1905,19 @@
         } catch (e) { console.error(e); }
     }
 
-    async function joinCall() {
+    async function joinCall(audioOnly) {
         if (inCall) return;
         await loadIceConfig();
         try {
-            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localStream = await navigator.mediaDevices.getUserMedia({
+                video: !audioOnly,
+                audio: true,
+            });
         } catch (e) { alert('Nu am putut accesa camera/microfonul: ' + e.message); return; }
         localVideo.srcObject = localStream;
         localTile.hidden = false;
         inCall = true;
+        handRaised = false;
         updateCallUI();
         requestWakeLock();
         send({ type: 'call_join' });
@@ -1879,23 +1990,212 @@
         teardownCall();
     }
 
+    const joinAudioOnlyBtn = document.getElementById('joinAudioOnlyBtn');
+    const toggleHandBtn = document.getElementById('toggleHandBtn');
+    let handRaised = false;
+
     function updateCallUI() {
         if (inCall) {
             toggleCallBtn.innerHTML = '<i class="bi bi-telephone-x"></i> Ieși din apel';
             toggleCallBtn.className = 'btn btn-sm btn-danger';
+            if (joinAudioOnlyBtn) joinAudioOnlyBtn.classList.add('d-none');
+            if (toggleHandBtn) toggleHandBtn.classList.remove('d-none');
             videoStatus.textContent = 'În apel'; videoStatus.className = 'badge text-bg-success';
             toggleAudioBtn.disabled = false; toggleVideoCameraBtn.disabled = false;
         } else {
             toggleCallBtn.innerHTML = '<i class="bi bi-camera-video"></i> Intră în apel';
             toggleCallBtn.className = 'btn btn-sm btn-success';
+            if (joinAudioOnlyBtn) joinAudioOnlyBtn.classList.remove('d-none');
+            if (toggleHandBtn) toggleHandBtn.classList.add('d-none');
             videoStatus.textContent = 'Neconectat'; videoStatus.className = 'badge text-bg-secondary';
             toggleAudioBtn.disabled = true; toggleVideoCameraBtn.disabled = true;
         }
     }
 
     if (toggleCallBtn) toggleCallBtn.addEventListener('click', function () {
-        if (inCall) leaveCall(); else joinCall();
+        if (inCall) leaveCall(); else joinCall(false);
     });
+    if (joinAudioOnlyBtn) joinAudioOnlyBtn.addEventListener('click', function () {
+        if (!inCall) joinCall(true);
+    });
+    if (toggleHandBtn) toggleHandBtn.addEventListener('click', function () {
+        if (!inCall) return;
+        handRaised = !handRaised;
+        toggleHandBtn.className = 'btn btn-sm ' + (handRaised ? 'btn-warning' : 'btn-outline-warning');
+        send({ type: 'call_hand', raised: handRaised });
+    });
+
+    function handleCallHand(data) {
+        if (data.raised) {
+            addMessage({
+                type: 'video_notification',
+                username: 'Apel',
+                message: '✋ ' + data.username + ' a ridicat mâna în apel',
+            });
+        }
+    }
+
+    // ---- Live Room Topic & Interactive Polls ------------------------------
+    const pollsContainer = document.getElementById('pollsContainer');
+    function handleRoomTopic(data) {
+        const banner = document.getElementById('roomTopicBanner');
+        const txt = document.getElementById('roomTopicText');
+        if (txt) txt.textContent = data.topic || '';
+        if (banner) banner.classList.toggle('d-none', !data.topic);
+    }
+
+    function renderPollCard(poll) {
+        if (!pollsContainer || !poll || !poll.id) return;
+        let card = pollsContainer.querySelector('[data-poll-id="' + poll.id + '"]');
+        if (poll.is_closed && card) {
+            card.remove();
+            return;
+        }
+        if (!card) {
+            card = document.createElement('div');
+            card.className = 'card shadow-sm border-primary-subtle';
+            card.dataset.pollId = poll.id;
+            pollsContainer.prepend(card);
+        }
+        card.replaceChildren();
+        const body = document.createElement('div');
+        body.className = 'card-body py-2 px-3 small';
+
+        const head = document.createElement('div');
+        head.className = 'd-flex justify-content-between align-items-center mb-2';
+        const title = document.createElement('strong');
+        title.textContent = '📊 ' + poll.question;
+        const meta = document.createElement('span');
+        meta.className = 'text-body-secondary';
+        meta.textContent = poll.total_votes + ' voturi · de ' + poll.creator;
+        head.append(title, meta);
+
+        if (!poll.is_closed && (poll.creator === userName || isRoomOwnerOrStaff)) {
+            const closeBtn = document.createElement('button');
+            closeBtn.type = 'button';
+            closeBtn.className = 'btn btn-sm btn-link text-danger p-0 ms-2';
+            closeBtn.textContent = 'Închide';
+            closeBtn.addEventListener('click', function () {
+                send({ type: 'close_poll', poll_id: poll.id });
+            });
+            head.appendChild(closeBtn);
+        }
+        body.appendChild(head);
+
+        const optsWrap = document.createElement('div');
+        optsWrap.className = 'd-flex flex-column gap-1';
+        (poll.options || []).forEach(function (opt) {
+            const pct = poll.total_votes ? Math.round((opt.count * 100) / poll.total_votes) : 0;
+            const votedByMe = Array.isArray(opt.voters) && opt.voters.indexOf(userName) !== -1;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.disabled = !!poll.is_closed;
+            btn.className = 'btn btn-sm text-start position-relative overflow-hidden ' +
+                (votedByMe ? 'btn-outline-primary fw-semibold' : 'btn-outline-secondary');
+            const labelRow = document.createElement('div');
+            labelRow.className = 'd-flex justify-content-between position-relative';
+            const optText = document.createElement('span');
+            optText.textContent = (votedByMe ? '✓ ' : '') + opt.text;
+            const optCount = document.createElement('span');
+            optCount.textContent = opt.count + ' (' + pct + '%)';
+            labelRow.append(optText, optCount);
+            btn.appendChild(labelRow);
+            if (opt.voters && opt.voters.length) btn.title = 'Votat de: ' + opt.voters.join(', ');
+            btn.addEventListener('click', function () {
+                send({ type: 'vote_poll', poll_id: poll.id, option_id: opt.id });
+            });
+            optsWrap.appendChild(btn);
+        });
+        body.appendChild(optsWrap);
+        card.appendChild(body);
+    }
+
+    try {
+        const initPolls = JSON.parse(document.getElementById('initial-polls').textContent || '[]');
+        initPolls.reverse().forEach(function (p) { if (!p.is_closed) renderPollCard(p); });
+    } catch (e) {}
+
+    const createPollForm = document.getElementById('createPollForm');
+    if (createPollForm) {
+        createPollForm.addEventListener('submit', function (e) {
+            e.preventDefault();
+            const q = document.getElementById('pollQuestion').value.trim();
+            const opts = Array.from(createPollForm.querySelectorAll('.poll-opt-input'))
+                .map(function (inp) { return inp.value.trim(); })
+                .filter(Boolean);
+            if (q && opts.length >= 2) {
+                send({ type: 'create_poll', question: q, options: opts });
+                createPollForm.reset();
+                const modalEl = document.getElementById('createPollModal');
+                if (modalEl && window.bootstrap) {
+                    const inst = window.bootstrap.Modal.getInstance(modalEl);
+                    if (inst) inst.hide();
+                }
+            }
+        });
+    }
+
+    // ---- User Profile Modal & 1-Click Direct Message ----------------------
+    let selectedProfileUser = null;
+    async function openUserProfile(targetUsername) {
+        if (!targetUsername) return;
+        selectedProfileUser = targetUsername;
+        const modalEl = document.getElementById('userProfileModal');
+        if (!modalEl) return;
+        document.getElementById('modalUserName').textContent = '@' + targetUsername;
+        const av = document.getElementById('modalUserAvatar');
+        av.textContent = targetUsername.slice(0, 2);
+        av.style.background = avatarColor(targetUsername);
+        document.getElementById('modalUserBio').textContent = 'Se încarcă…';
+        document.getElementById('modalUserStatus').classList.add('d-none');
+        const dmBtn = document.getElementById('modalDmBtn');
+        if (dmBtn) dmBtn.classList.toggle('d-none', targetUsername === userName);
+
+        if (window.bootstrap) {
+            window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        }
+        try {
+            const r = await fetch('/users/' + encodeURIComponent(targetUsername) + '/profile/', {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            });
+            if (!r.ok) return;
+            const p = await r.json();
+            if (p.avatar_color) av.style.background = p.avatar_color;
+            document.getElementById('modalUserBio').textContent = p.bio || 'Fără descriere.';
+            document.getElementById('modalUserMsgs').textContent = String(p.message_count || 0);
+            document.getElementById('modalUserJoined').textContent = p.joined || '-';
+            const stEl = document.getElementById('modalUserStatus');
+            if (p.status_emoji || p.status_text) {
+                stEl.textContent = ((p.status_emoji || '') + ' ' + (p.status_text || '')).trim();
+                stEl.classList.remove('d-none');
+            }
+        } catch (e) {}
+    }
+
+    const modalMentionBtn = document.getElementById('modalMentionBtn');
+    if (modalMentionBtn) {
+        modalMentionBtn.addEventListener('click', function () {
+            if (!selectedProfileUser || !messageInput) return;
+            messageInput.value += (messageInput.value && !messageInput.value.endsWith(' ') ? ' ' : '') + '@' + selectedProfileUser + ' ';
+            messageInput.focus();
+        });
+    }
+    const modalDmBtn = document.getElementById('modalDmBtn');
+    if (modalDmBtn) {
+        modalDmBtn.addEventListener('click', async function () {
+            if (!selectedProfileUser || selectedProfileUser === userName) return;
+            const csrfInput = document.querySelector('#globalCsrfForm input[name=csrfmiddlewaretoken]');
+            const csrf = csrfInput ? csrfInput.value : '';
+            try {
+                const r = await fetch('/dm/' + encodeURIComponent(selectedProfileUser) + '/', {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                const j = await r.json();
+                if (j.success && j.url) window.location.href = j.url;
+            } catch (e) {}
+        });
+    }
     if (toggleAudioBtn) toggleAudioBtn.addEventListener('click', function () {
         if (!localStream) return;
         const t = localStream.getAudioTracks()[0];

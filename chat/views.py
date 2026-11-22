@@ -10,7 +10,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib import messages as flash
-from django.contrib.auth import login, logout, views as auth_views
+from django.contrib.auth import get_user_model, login, logout, views as auth_views
 from django.contrib.auth.decorators import login_required
 from django.contrib.staticfiles import finders
 from django.core import signing
@@ -25,7 +25,7 @@ from django.views.decorators.http import require_http_methods
 
 from .consumers import _presence_list
 from .forms import RegistrationForm
-from .models import ALLOWED_REACTIONS, ChatRoom
+from .models import ALLOWED_REACTIONS, ChatRoom, Message, MessageReaction, UserProfile
 
 # How many messages a history page returns.
 HISTORY_PAGE_SIZE = 30
@@ -39,6 +39,7 @@ INVITE_MAX_AGE = 7 * 24 * 3600  # seconds
 
 # Strict ASCII room name pattern (prevents Unicode homograph spoofing).
 ROOM_NAME_RE = re.compile(r'^[A-Za-z0-9_]+$')
+HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{6}$')
 
 
 def _client_ip(request):
@@ -136,6 +137,13 @@ def room(request, room_name):
             chat_room.members.exclude(pk=request.user.pk).order_by('username')
         )
 
+    room_polls = [
+        p.serialize()
+        for p in chat_room.polls
+        .select_related('creator')
+        .prefetch_related('options__votes__user')[:5]
+    ]
+
     return render(request, 'chat/room.html', {
         'room_name': room_name,
         'chat_room': chat_room,
@@ -143,6 +151,7 @@ def room(request, room_name):
         'pinned_messages': pinned_messages,
         'room_members': room_members,
         'allowed_reactions': ALLOWED_REACTIONS,
+        'room_polls_json': json.dumps(room_polls),
     })
 
 
@@ -345,16 +354,175 @@ def room_update(request, room_name):
         )
     if 'description' in request.POST:
         chat_room.description = request.POST.get('description', '').strip()[:1000]
+    if 'topic' in request.POST:
+        chat_room.topic = request.POST.get('topic', '').strip()[:250]
     if 'is_private' in request.POST:
         chat_room.is_private = request.POST.get('is_private') in ('on', 'true', '1')
         if chat_room.is_private:
             chat_room.members.add(request.user)
-    chat_room.save(update_fields=['description', 'is_private'])
+    chat_room.save(update_fields=['description', 'topic', 'is_private'])
     return JsonResponse({
         'success': True,
         'description': chat_room.description,
+        'topic': chat_room.topic,
         'is_private': chat_room.is_private,
     })
+
+
+@login_required
+def room_export(request, room_name):
+    """Export room conversation history as JSON or plain-text transcript."""
+    chat_room = get_object_or_404(ChatRoom, name=room_name)
+    if not chat_room.can_access(request.user):
+        return HttpResponseForbidden('Acces interzis.')
+    msgs = list(
+        chat_room.messages
+        .select_related('user', 'reply_to__user')
+        .prefetch_related('reactions__user')
+        .order_by('-id')[:500]
+    )
+    msgs.reverse()
+    fmt = (request.GET.get('format') or 'json').lower()
+    if fmt == 'txt':
+        now_str = timezone.localtime().strftime('%Y-%m-%d %H:%M')
+        lines = [
+            f'# Transcript #{chat_room.name} — exportat la {now_str}',
+            '',
+        ]
+        for m in msgs:
+            ts = timezone.localtime(m.timestamp).strftime('%Y-%m-%d %H:%M')
+            lines.append(f'[{ts}] {m.user.username}: {m.content}')
+        resp = HttpResponse('\n'.join(lines) + '\n', content_type='text/plain; charset=utf-8')
+        resp['Content-Disposition'] = f'attachment; filename="{chat_room.name}-transcript.txt"'
+        return resp
+
+    payload = {
+        'room': chat_room.name,
+        'description': chat_room.description,
+        'topic': chat_room.topic,
+        'exported_at': timezone.localtime().isoformat(),
+        'messages': [_serialize_message(m) for m in msgs],
+    }
+    resp = HttpResponse(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        content_type='application/json; charset=utf-8',
+    )
+    resp['Content-Disposition'] = f'attachment; filename="{chat_room.name}-export.json"'
+    return resp
+
+
+@login_required
+@require_http_methods(['POST'])
+def start_dm(request, username):
+    """Find or create a 1-on-1 private direct-message room with another user."""
+    User = get_user_model()
+    target = get_object_or_404(User, username=username)
+    if target.id == request.user.id:
+        return JsonResponse(
+            {'success': False, 'error': 'Nu poți deschide o conversație privată cu tine însuți.'},
+            status=400,
+        )
+    low_id, high_id = sorted([request.user.id, target.id])
+    dm_name = f'dm_{low_id}_{high_id}'
+    dm_room, created = ChatRoom.objects.get_or_create(
+        name=dm_name,
+        defaults={
+            'description': f'Mesaje directe între @{request.user.username} și @{target.username}',
+            'owner': request.user,
+            'is_private': True,
+        },
+    )
+    dm_room.members.add(request.user, target)
+    room_url = reverse('chat:room', args=[dm_room.name])
+    return JsonResponse({
+        'success': True,
+        'created': created,
+        'room_name': dm_room.name,
+        'url': room_url,
+    })
+
+
+@login_required
+def user_profile_json(request, username):
+    """Return public profile metadata and activity stats for a user."""
+    User = get_user_model()
+    target = get_object_or_404(User, username=username)
+    profile = UserProfile.objects.filter(user=target).first()
+    return JsonResponse({
+        'username': target.username,
+        'joined': timezone.localtime(target.date_joined).strftime('%d.%m.%Y'),
+        'bio': profile.bio if profile else '',
+        'status_emoji': profile.status_emoji if profile else '',
+        'status_text': profile.status_text if profile else '',
+        'avatar_color': profile.avatar_color if profile else '',
+        'message_count': Message.objects.filter(user=target).count(),
+    })
+
+
+@login_required
+def profile_view(request):
+    """Self-service user profile page with custom status, bio, avatar color, and stats."""
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    if request.method == 'POST':
+        profile.bio = (request.POST.get('bio') or '').strip()[:300]
+        profile.status_emoji = (request.POST.get('status_emoji') or '').strip()[:16]
+        profile.status_text = (request.POST.get('status_text') or '').strip()[:80]
+        raw_color = (request.POST.get('avatar_color') or '').strip()
+        profile.avatar_color = raw_color if HEX_COLOR_RE.fullmatch(raw_color) else ''
+        profile.save()
+        flash.success(request, 'Profilul tău a fost actualizat.')
+        return redirect('chat:profile')
+
+    stats = {
+        'messages_sent': Message.objects.filter(user=request.user).count(),
+        'rooms_owned': ChatRoom.objects.filter(owner=request.user).count(),
+        'rooms_joined': request.user.joined_rooms.count(),
+        'reactions_received': MessageReaction.objects.filter(message__user=request.user).count(),
+    }
+    return render(request, 'registration/profile.html', {
+        'profile': profile,
+        'stats': stats,
+    })
+
+
+@login_required
+def account_export(request):
+    """Self-service GDPR/privacy export of the user's own account data and messages."""
+    profile = UserProfile.objects.filter(user=request.user).first()
+    own_messages = list(
+        Message.objects.filter(user=request.user)
+        .select_related('room')
+        .order_by('-id')[:1000]
+    )
+    payload = {
+        'username': request.user.username,
+        'email': request.user.email,
+        'date_joined': timezone.localtime(request.user.date_joined).isoformat(),
+        'profile': {
+            'bio': profile.bio if profile else '',
+            'status_emoji': profile.status_emoji if profile else '',
+            'status_text': profile.status_text if profile else '',
+            'avatar_color': profile.avatar_color if profile else '',
+        },
+        'owned_rooms': list(
+            ChatRoom.objects.filter(owner=request.user).values_list('name', flat=True)
+        ),
+        'messages': [
+            {
+                'id': m.id,
+                'room': m.room.name,
+                'content': m.content,
+                'timestamp': timezone.localtime(m.timestamp).isoformat(),
+            }
+            for m in own_messages
+        ],
+    }
+    resp = HttpResponse(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        content_type='application/json; charset=utf-8',
+    )
+    resp['Content-Disposition'] = f'attachment; filename="{request.user.username}-data-export.json"'
+    return resp
 
 
 @login_required

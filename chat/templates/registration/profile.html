@@ -1,0 +1,138 @@
+{% extends 'chat/base.html' %}
+
+{% block title %}Profilul meu{% endblock %}
+{% block meta_robots %}noindex, nofollow{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center g-4">
+    <div class="col-lg-5">
+        <div class="card shadow-sm">
+            <div class="card-body text-center">
+                <div class="user-avatar mx-auto mb-3"
+                     style="width: 72px; height: 72px; font-size: 1.6rem; background: {{ profile.avatar_color|default:'#5b6fe0' }};">
+                    {{ user.username|slice:":2" }}
+                </div>
+                <h4 class="mb-1">{{ user.username }}</h4>
+                {% if profile.status_emoji or profile.status_text %}
+                    <p class="badge bg-primary-subtle text-primary-emphasis fs-6 mb-2">
+                        {{ profile.status_emoji }} {{ profile.status_text }}
+                    </p>
+                {% endif %}
+                {% if profile.bio %}
+                    <p class="text-body-secondary small mb-3">{{ profile.bio }}</p>
+                {% else %}
+                    <p class="text-body-secondary small fst-italic mb-3">Nicio descriere adăugată încă.</p>
+                {% endif %}
+                <p class="text-body-secondary small mb-3">
+                    <i class="bi bi-calendar3"></i> Membru din {{ user.date_joined|date:"d M Y" }}
+                </p>
+
+                <div class="row g-2 text-center mb-3">
+                    <div class="col-6">
+                        <div class="p-2 rounded bg-body-tertiary">
+                            <div class="h5 mb-0 text-primary">{{ stats.messages_sent }}</div>
+                            <small class="text-body-secondary">Mesaje trimise</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-2 rounded bg-body-tertiary">
+                            <div class="h5 mb-0 text-danger">{{ stats.reactions_received }}</div>
+                            <small class="text-body-secondary">Reacții primite</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-2 rounded bg-body-tertiary">
+                            <div class="h5 mb-0 text-success">{{ stats.rooms_owned }}</div>
+                            <small class="text-body-secondary">Camere create</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-2 rounded bg-body-tertiary">
+                            <div class="h5 mb-0 text-warning">{{ stats.rooms_joined }}</div>
+                            <small class="text-body-secondary">Camere private</small>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="d-grid gap-2">
+                    <a href="{% url 'chat:account_export' %}" class="btn btn-sm btn-outline-primary">
+                        <i class="bi bi-download"></i> Exportă datele mele (JSON)
+                    </a>
+                    <a href="{% url 'chat:password_change' %}" class="btn btn-sm btn-outline-secondary">
+                        <i class="bi bi-key"></i> Schimbă parola
+                    </a>
+                    <a href="{% url 'chat:delete_account' %}" class="btn btn-sm btn-outline-danger">
+                        <i class="bi bi-trash"></i> Șterge contul
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-7">
+        <div class="card shadow-sm">
+            <div class="card-header bg-transparent">
+                <h5 class="mb-0"><i class="bi bi-person-gear"></i> Personalizează profilul & statusul</h5>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    <div class="row g-2 mb-3">
+                        <div class="col-sm-3">
+                            <label for="status_emoji" class="form-label">Emoji status</label>
+                            <input type="text" id="status_emoji" name="status_emoji" class="form-control text-center"
+                                   maxlength="16" placeholder="🚀" value="{{ profile.status_emoji }}">
+                        </div>
+                        <div class="col-sm-9">
+                            <label for="status_text" class="form-label">Status scurt</label>
+                            <input type="text" id="status_text" name="status_text" class="form-control"
+                                   maxlength="80" placeholder="ex: Disponibil pentru apel video" value="{{ profile.status_text }}">
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="bio" class="form-label">Despre mine (Bio)</label>
+                        <textarea id="bio" name="bio" class="form-control" rows="3" maxlength="300"
+                                  placeholder="Scrie câteva cuvinte despre tine…">{{ profile.bio }}</textarea>
+                        <div class="form-text">Vizibil când ceilalți participanți dau click pe numele tău în chat.</div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label for="avatar_color" class="form-label">Culoare avatar <small class="text-body-secondary">(opțional, format #RRGGBB)</small></label>
+                        <div class="d-flex align-items-center gap-2">
+                            <input type="color" id="avatar_color_picker" class="form-control form-control-color"
+                                   value="{{ profile.avatar_color|default:'#5b6fe0' }}">
+                            <input type="text" id="avatar_color" name="avatar_color" class="form-control"
+                                   maxlength="7" placeholder="#5b6fe0" value="{{ profile.avatar_color }}">
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-between align-items-center">
+                        <a href="{% url 'chat:index' %}" class="btn btn-outline-secondary">
+                            <i class="bi bi-arrow-left"></i> Înapoi la camere
+                        </a>
+                        <button type="submit" class="btn btn-brand">
+                            <i class="bi bi-check2-circle"></i> Salvează profilul
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script nonce="{{ csp_nonce }}">
+(function () {
+    const picker = document.getElementById('avatar_color_picker');
+    const input = document.getElementById('avatar_color');
+    if (picker && input) {
+        picker.addEventListener('input', function () { input.value = picker.value; });
+        input.addEventListener('input', function () {
+            if (/^#[0-9a-fA-F]{6}$/.test(input.value)) picker.value = input.value;
+        });
+    }
+})();
+</script>
+{% endblock %}

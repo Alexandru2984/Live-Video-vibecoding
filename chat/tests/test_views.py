@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import json
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -503,6 +504,54 @@ class SeoAndDiscoveryTests(TestCase):
         self.assertIn('content="index, follow"', pub_html)
         pw_html = self.client.get('/account/password/').content.decode()
         self.assertIn('content="noindex, nofollow"', pw_html)
+
+
+class ProfileDmAndExportViewTests(TestCase):
+    def setUp(self):
+        self.alice = User.objects.create_user('alice', password=STRONG)
+        self.bob = User.objects.create_user('bob', password=STRONG)
+        self.room = ChatRoom.objects.create(name='general', owner=self.alice)
+        Message.objects.create(room=self.room, user=self.alice, content='Salut din test!')
+
+    def test_profile_update_and_json_endpoint(self):
+        self.client.force_login(self.alice)
+        resp = self.client.post('/account/profile/', {
+            'bio': 'Full-stack dev',
+            'status_emoji': '🚀',
+            'status_text': 'Coding',
+            'avatar_color': '#10b981',
+        })
+        self.assertRedirects(resp, '/account/profile/')
+        data = self.client.get('/users/alice/profile/').json()
+        self.assertEqual(data['bio'], 'Full-stack dev')
+        self.assertEqual(data['status_emoji'], '🚀')
+        self.assertEqual(data['avatar_color'], '#10b981')
+        self.assertEqual(data['message_count'], 1)
+
+    def test_start_dm_creates_private_room_between_two_users(self):
+        self.client.force_login(self.alice)
+        # Cannot DM yourself.
+        self.assertEqual(self.client.post('/dm/alice/').status_code, 400)
+        resp = self.client.post('/dm/bob/').json()
+        self.assertTrue(resp['success'])
+        dm_room = ChatRoom.objects.get(name=resp['room_name'])
+        self.assertTrue(dm_room.is_private)
+        self.assertTrue(dm_room.can_access(self.alice))
+        self.assertTrue(dm_room.can_access(self.bob))
+
+    def test_room_and_account_exports(self):
+        self.client.force_login(self.alice)
+        txt_resp = self.client.get('/room/general/export/?format=txt')
+        self.assertEqual(txt_resp.status_code, 200)
+        self.assertIn('Salut din test!', txt_resp.content.decode())
+
+        json_resp = self.client.get('/room/general/export/?format=json')
+        self.assertEqual(json_resp.status_code, 200)
+        self.assertEqual(json.loads(json_resp.content)['room'], 'general')
+
+        acc_resp = self.client.get('/account/export/')
+        self.assertEqual(acc_resp.status_code, 200)
+        self.assertEqual(json.loads(acc_resp.content)['username'], 'alice')
 
 
 class IceServersViewTests(TestCase):

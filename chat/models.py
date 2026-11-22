@@ -7,6 +7,7 @@ ALLOWED_REACTIONS = ('👍', '❤️', '😂', '🔥', '😮', '😢', '🎉', '
 class ChatRoom(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
+    topic = models.CharField(max_length=250, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     # Rooms created before ownership existed have owner=None (nobody can
     # delete them except via the admin, same as before).
@@ -89,3 +90,80 @@ class MessageReaction(models.Model):
 
     def __str__(self):
         return f'{self.user.username} {self.emoji} on #{self.message_id}'
+
+
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    bio = models.CharField(max_length=300, blank=True)
+    status_emoji = models.CharField(max_length=16, blank=True)
+    status_text = models.CharField(max_length=80, blank=True)
+    avatar_color = models.CharField(max_length=7, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'Profil {self.user.username}'
+
+
+class Poll(models.Model):
+    room = models.ForeignKey(ChatRoom, on_delete=models.CASCADE, related_name='polls')
+    creator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_polls')
+    question = models.CharField(max_length=250)
+    is_closed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-id']
+
+    def serialize(self):
+        options_out = []
+        total_votes = 0
+        for opt in self.options.all():
+            voters = sorted(v.user.username for v in opt.votes.all())
+            count = len(voters)
+            total_votes += count
+            options_out.append({
+                'id': opt.id,
+                'text': opt.text,
+                'count': count,
+                'voters': voters,
+            })
+        return {
+            'id': self.id,
+            'question': self.question,
+            'creator': self.creator.username,
+            'is_closed': self.is_closed,
+            'total_votes': total_votes,
+            'options': options_out,
+        }
+
+    def __str__(self):
+        return f'Poll #{self.id}: {self.question[:50]}'
+
+
+class PollOption(models.Model):
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name='options')
+    text = models.CharField(max_length=120)
+
+    class Meta:
+        ordering = ['id']
+
+    def __str__(self):
+        return self.text
+
+
+class PollVote(models.Model):
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name='votes')
+    option = models.ForeignKey(PollOption, on_delete=models.CASCADE, related_name='votes')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='poll_votes')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['poll', 'user'],
+                name='chat_unique_poll_user_vote',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.user.username} -> {self.option_id} (poll {self.poll_id})'

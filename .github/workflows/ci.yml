@@ -38,7 +38,7 @@ jobs:
 
     env:
       # Test-only value; production uses a real secret from the environment.
-      DJANGO_SECRET_KEY: ci-secret-not-used-in-production
+      DJANGO_SECRET_KEY: ci-secret-not-used-in-production-0123456789abcdef0123456789abcdef
       DJANGO_DEBUG: 'False'
       DJANGO_ALLOWED_HOSTS: testserver,localhost,127.0.0.1
 
@@ -56,8 +56,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: System check
-        run: python manage.py check
+      - name: System and deployment security check
+        run: python manage.py check --deploy
 
       - name: Check for missing migrations
         run: python manage.py makemigrations --check --dry-run

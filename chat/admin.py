@@ -1,12 +1,14 @@
 from django.contrib import admin
-from .models import ChatRoom, Message, MessageReaction
+from .models import ChatRoom, Message, MessageReaction, Poll, PollOption, UserProfile
 
 
 @admin.register(ChatRoom)
 class ChatRoomAdmin(admin.ModelAdmin):
-    list_display = ('name', 'description', 'owner', 'is_private', 'invite_version', 'created_at')
+    list_display = (
+        'name', 'description', 'topic', 'owner', 'is_private', 'invite_version', 'created_at',
+    )
     list_filter = ('is_private', 'created_at')
-    search_fields = ('name', 'description', 'owner__username')
+    search_fields = ('name', 'description', 'topic', 'owner__username')
     readonly_fields = ('created_at',)
     filter_horizontal = ('members',)
 
@@ -29,3 +31,22 @@ class MessageReactionAdmin(admin.ModelAdmin):
     list_filter = ('emoji', 'created_at')
     search_fields = ('user__username', 'message__content')
     readonly_fields = ('created_at',)
+
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    list_display = ('user', 'status_emoji', 'status_text', 'avatar_color', 'updated_at')
+    search_fields = ('user__username', 'bio', 'status_text')
+
+
+class PollOptionInline(admin.TabularInline):
+    model = PollOption
+    extra = 0
+
+
+@admin.register(Poll)
+class PollAdmin(admin.ModelAdmin):
+    list_display = ('question', 'room', 'creator', 'is_closed', 'created_at')
+    list_filter = ('is_closed', 'room')
+    search_fields = ('question', 'creator__username', 'room__name')
+    inlines = [PollOptionInline]
